@@ -1,5 +1,9 @@
 Changes in coreylib since 1.0.3
 
+v1.1.4 March 10, 2010
+
+Fixed a bug in caching: now comparing all dates in terms of GMT.
+
 v1.1.3 March 10, 2010
 
 There was a bug in basic authentication over cURL.
