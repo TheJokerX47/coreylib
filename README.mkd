@@ -76,7 +76,7 @@ Every node of the API response has an <code>info()</code> method that you can us
 	// here's a hypothetical
 	echo $api->get('html/body/p/a@href');
 	
-	// and for the savvy, xpath support
+	// and for the savvy: xpath support
 	$not_protected = $api->xpath('//status/user[protected[text()="false"]]'); 
 
 ##The coreylib story
