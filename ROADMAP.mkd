@@ -1,0 +1,10 @@
+#coreylib Roadmap
+
+##v1.2.0 (2010)
+
+* Tested and working in PHP 5.3
+* Support for memcached
+* Better response browsing (powered by ExtJS)
+* Better CodeIgniter support (coreylib.php functions as CodeIgniter library)
+* Unification of the configuration file and main source code file, thus eliminating the need for the external file
+* New unification of configuration includes automatic detection of WordPress and CodeIgniter stacks

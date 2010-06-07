@@ -1,5 +1,12 @@
 Changes in coreylib since 1.0.3
 
+v1.1.5 June 6, 2010
+
+* Added support for oAuth 1.0a.
+* Revised README doc, new audience: PHP developers
+* Simplified project contents (no more src folder)
+* Removed all old test files in preparation for real unit-tests
+
 v1.1.4 March 10, 2010
 
 Fixed a bug in caching: now comparing all dates in terms of GMT.
