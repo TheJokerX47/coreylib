@@ -10,7 +10,7 @@ Other great things about coreylib:
 
 * Supports both HTTP basic authentication and oAuth version 1.0a 
 * Automagically converts JSON to XML - only one set of functions to learn
-* Use simple, name-based XML document navigation, or XPATH
+* Use simple, name-based XML document navigation or XPATH to query data content
 * Method chaining syntax! 
 * Mash-up features use multi_curl = lightning-fast, threaded downloads from APIs
 * Caching layer supports MySQL and storing API content on disk (memcached support coming soon!)
