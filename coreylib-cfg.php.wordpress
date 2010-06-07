@@ -16,13 +16,13 @@ clCache::configure(array(
 // set to true and coreylib won't try to create its cache table
 'nocreate' => false, 
 // server name or ip where mysql is hosted
-'mysql_host' => 'DB_HOST', 
+'mysql_host' => DB_HOST, 
 // username for accessing the database
-'mysql_username' => 'DB_USER', 
+'mysql_username' => DB_USER, 
 // password for accessing the database
-'mysql_password' => 'DB_PASSWORD',
+'mysql_password' => DB_PASSWORD,
 // name of the database in which to store the cache table
-'mysql_database' => 'DB_NAME', 
+'mysql_database' => DB_NAME, 
 // a prefix to append to the cache table name
 'mysql_table_prefix' => 'coreylib_' 
 ));
