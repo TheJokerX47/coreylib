@@ -2,13 +2,9 @@
 
 ##What is coreylib?
 
-coreylib is an XML and JSON parsing and caching library, written in Object-Oriented PHP 5.  
-We like to think of it as a universal API client because it will work with virtually any XML or JSON REST Web service.  
-And it's free, as in free beer (GNU GPL v2).
+coreylib is an XML and JSON parsing and caching library, written in Object-Oriented PHP 5. We like to think of it as a universal API client because it will work with virtually any XML or JSON REST Web service. And it's free, as in free beer (GNU GPL v2).
 
-The coreylib prototyping workflow allows you to quickly develop production-ready mash-ups without the overhead of learning someone else's API client wrapper.  
-Using the response browser built-into coreylib, you can easily inspect and navigate API responses right in the content of your page.
-Learn to use coreylib the first time through, and you'll look no further for every other mash-up project you ever do.
+The coreylib prototyping workflow allows you to quickly develop production-ready mash-ups without the overhead of learning someone else's API client wrapper. Using the response browser built-into coreylib, you can easily inspect and navigate API responses right in the content of your page. Learn to use coreylib the first time through, and you'll look no further for every other mash-up project you ever do.
 
 Other great things about coreylib:
 
@@ -97,8 +93,7 @@ Thus, with little fuss, coreylib was born. And now you can use it in your projec
 
 ##Contributing to coreylib
 
-coreylib is an open source project licensed under the terms of the GNU GPL v2. You can use it in your own applications,
-modify it if you need to, but you must release your source code when you distribute coreylib as part of another application.
+coreylib is an open source project licensed under the terms of the GNU GPL v2. You can use it in your own applications, modify it if you need to, but you must release your source code when you distribute coreylib as part of another application.
 
 If you want to contribute directly to the coreylib project, you can find the [project source code](http://github.com/collegeman/coreylib) on GitHub.
 
