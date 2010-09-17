@@ -1,5 +1,12 @@
 Changes in coreylib since 1.0.3
 
+v1.1.6 August 4, 2010
+
+* Added clAPI::text to alias clNode::text for the root node
+* Started implementing unit tests in test/run.php
+* Fixed a bug in clNode::text - wasn't returning text
+* Fixed the notice bug on clAPI::$consumerKey not being defined (it was spelled incorrectly)
+
 v1.1.5 June 6, 2010
 
 * Added support for oAuth 1.0a.

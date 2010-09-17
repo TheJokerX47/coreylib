@@ -3,7 +3,7 @@
  * coreylib
  * Parse and cache XML and JSON.
  * @author Aaron Collegeman http://aaroncollegeman.com aaron@collegeman.net
- * @version 1.1.5
+ * @version 1.1.6
  *
  * Copyright (C)2008-2010 Collegeman.net, LLC.
  *
@@ -269,7 +269,7 @@ class clAPI {
 	
 	protected $password;
 	
-	protected $consumserKey;
+	protected $consumerKey;
 	protected $consumerSecret;
 	protected $accessToken;
 	protected $accessTokenSecret;
@@ -308,7 +308,7 @@ class clAPI {
 		"trace" => false
 	);
 	
-	function __construct($url, $parserType = COREYLIB_PARSER_XML) {
+	function __construct($url = null, $parserType = null) {
 		$this->header('Expect', '');
 		
 		if (clAPI::$options['debug'] || clAPI::$options['display_errors']) {
@@ -316,22 +316,34 @@ class clAPI {
 			ini_set('display_errors', true);
 		}
 		
-		if (!empty($url)) {
+		if (preg_match('#^https?://([-\w\.]+)+(:\d+)?(/([\w/_\.]*(\?\S+)?)?)?$#', $url)) {
 			$this->url = $url;
 			
 			if (!$parserType) { // attempt autodetection
-				if (preg_match('/(xml|rss)$/', $url))
+				if (preg_match('/(xml|rss)$/', $url)) {
 					$parserType = COREYLIB_PARSER_XML;
-				else if (preg_match('/(json)$/', $url))
+				}
+				else if (preg_match('/(json)$/', $url)) {
 					$parserType = COREYLIB_PARSER_JSON;
-				else
-					self::error("Please specify a parser type for $url - parameter two of the constructor should be one of COREYLIB_PARSER_XML or COREYLIB_PARSER_JSON.");
+					require('XML_Serializer-0.20.0/Serializer.php');
+				}
+				else {
+					$parserType = COREYLIB_PARSER_XML;
+					self::warn("Defaulting to XML parser type for $url - two force a parser type, parameter two of the constructor should be one of COREYLIB_PARSER_XML or COREYLIB_PARSER_JSON.");
+				}
 			}
 			
 			$this->parserType = $parserType;
 		}
-		else
-			self::error("Um... you have to tell me what URL you want to parse.");
+		else {
+			$this->setContent($url);
+			if (!$parserType) {
+				self::warn("Defaulting to XML parser type for $url - two force a parser type, parameter two of the constructor should be one of COREYLIB_PARSER_XML or COREYLIB_PARSER_JSON.");
+				$parserType = COREYLIB_PARSER_XML;
+			}
+			$this->parserType = COREYLIB_PARSER_XML;
+		}
+		
 	}
 	
 	function __toString() {
@@ -508,7 +520,21 @@ class clAPI {
 		return $this->parse($cacheFor);
 	}
 	
+	/**
+	 * Inject XML content, bypassing download. This was mainly introduced for testing purposes.
+	 * @since 1.1.6
+	 */
+	function setContent($content) {
+		$this->content = $content;
+	}
+	
 	function parse($cacheFor = 0) {
+		// @since 1.1.6
+		// if content is already set, do parse
+		if ($this->content) {
+			return $this->parseText($this->content, false);
+		}
+		
 		$this->content = false;
 		$this->cacheFor = $cacheFor;
 		
@@ -584,6 +610,20 @@ class clAPI {
 				$this->tree = new clNode($this->sxml);
 			}
 		}
+		else if ($this->parserType == COREYLIB_PARSER_JSON) {
+			// decode JSON content into PHP object
+			if ( ($json = json_decode($this->content)) === FALSE ) {
+				self::error("Failed to decode JSON from $this->url");
+				return false;
+			}
+			
+			// serialize PHP object into XML
+			$serializer = new XML_Serializer();
+			$xml = $serializer->serialize($json);
+			
+			
+		
+		}
 		
 		if ($this->cacheFor && !$contentCameFromCache && !clAPI::$options['nocache'])
 			clCache::saveContent($this->cacheName, $this->content, $this->cacheFor);
@@ -642,6 +682,16 @@ class clAPI {
 			self::error("Can't extract <b>$path</b> until you parse.");
 		else
 			return $this->tree->get($path, $limit, $forgive);
+	}
+	
+	/**
+	 * @since 1.1.6
+	 */
+	function text($path = null, $limit = null) {
+		if ($this->tree === null)
+			self::error("Can't extract <b>$path</b> until you parse.");
+		else
+			return $this->tree->text($path, $limit);
 	}
 	
 	/**
@@ -917,7 +967,7 @@ class clNode implements Iterator {
 		if (is_array($node))
 			return '['.join(', ', $node).']';
 		else
-			return $node;
+			return (string) $node;
 	}
 	
 	function info($path = null, $limit = null, $source = null) {
@@ -1502,7 +1552,7 @@ class clMashup implements ArrayAccess, Iterator {
 	
 		foreach($this->fries as $fry) {
 			if ($sort_by = $fry->spud->getSortOn()) {
-				$key = ''.$fry->get($sort_by);
+				$key = $fry->text($sort_by);
 				if ($type == MASHUP_SORT_DATE)
 					$key = date('c', strtotime($key));
 				
