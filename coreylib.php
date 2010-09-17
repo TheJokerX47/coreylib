@@ -269,7 +269,7 @@ class clAPI {
 	
 	protected $password;
 	
-	protected $consumserKey;
+	protected $consumerKey;
 	protected $consumerSecret;
 	protected $accessToken;
 	protected $accessTokenSecret;
