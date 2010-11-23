@@ -1,11 +1,1939 @@
 <?php
+// src/oauth-support.php
+
+ 
 /**
- * coreylib
- * Parse and cache XML and JSON.
- * @author Aaron Collegeman http://aaroncollegeman.com aaron@collegeman.net
- * @version 1.1.6
+ * OAuth support classes.
+ * @ref http://oauth.googlecode.com/svn/code/php/
+ */
+ 
+/* Generic exception class
+ */
+class OAuthException extends Exception {
+  // pass
+}
+
+class OAuthConsumer {
+  public $key;
+  public $secret;
+
+  function __construct($key, $secret, $callback_url=NULL) {
+    $this->key = $key;
+    $this->secret = $secret;
+    $this->callback_url = $callback_url;
+  }
+
+  function __toString() {
+    return "OAuthConsumer[key=$this->key,secret=$this->secret]";
+  }
+}
+
+class OAuthToken {
+  // access tokens and request tokens
+  public $key;
+  public $secret;
+
+  /**
+   * key = the token
+   * secret = the token secret
+   */
+  function __construct($key, $secret) {
+    $this->key = $key;
+    $this->secret = $secret;
+  }
+
+  /**
+   * generates the basic string serialization of a token that a server
+   * would respond to request_token and access_token calls with
+   */
+  function to_string() {
+    return "oauth_token=" .
+           OAuthUtil::urlencode_rfc3986($this->key) .
+           "&oauth_token_secret=" .
+           OAuthUtil::urlencode_rfc3986($this->secret);
+  }
+
+  function __toString() {
+    return $this->to_string();
+  }
+}
+
+/**
+ * A class for implementing a Signature Method
+ * See section 9 ("Signing Requests") in the spec
+ */
+abstract class OAuthSignatureMethod {
+  /**
+   * Needs to return the name of the Signature Method (ie HMAC-SHA1)
+   * @return string
+   */
+  abstract public function get_name();
+
+  /**
+   * Build up the signature
+   * NOTE: The output of this function MUST NOT be urlencoded.
+   * the encoding is handled in OAuthRequest when the final
+   * request is serialized
+   * @param OAuthRequest $request
+   * @param OAuthConsumer $consumer
+   * @param OAuthToken $token
+   * @return string
+   */
+  abstract public function build_signature($request, $consumer, $token);
+
+  /**
+   * Verifies that a given signature is correct
+   * @param OAuthRequest $request
+   * @param OAuthConsumer $consumer
+   * @param OAuthToken $token
+   * @param string $signature
+   * @return bool
+   */
+  public function check_signature($request, $consumer, $token, $signature) {
+    $built = $this->build_signature($request, $consumer, $token);
+    return $built == $signature;
+  }
+}
+
+/**
+ * The HMAC-SHA1 signature method uses the HMAC-SHA1 signature algorithm as defined in [RFC2104]
+ * where the Signature Base String is the text and the key is the concatenated values (each first
+ * encoded per Parameter Encoding) of the Consumer Secret and Token Secret, separated by an '&'
+ * character (ASCII code 38) even if empty.
+ *   - Chapter 9.2 ("HMAC-SHA1")
+ */
+class OAuthSignatureMethod_HMAC_SHA1 extends OAuthSignatureMethod {
+  function get_name() {
+    return "HMAC-SHA1";
+  }
+
+  public function build_signature($request, $consumer, $token) {
+    $base_string = $request->get_signature_base_string();
+    $request->base_string = $base_string;
+
+    $key_parts = array(
+      $consumer->secret,
+      ($token) ? $token->secret : ""
+    );
+
+    $key_parts = OAuthUtil::urlencode_rfc3986($key_parts);
+    $key = implode('&', $key_parts);
+
+    return base64_encode(hash_hmac('sha1', $base_string, $key, true));
+  }
+}
+
+/**
+ * The PLAINTEXT method does not provide any security protection and SHOULD only be used
+ * over a secure channel such as HTTPS. It does not use the Signature Base String.
+ *   - Chapter 9.4 ("PLAINTEXT")
+ */
+class OAuthSignatureMethod_PLAINTEXT extends OAuthSignatureMethod {
+  public function get_name() {
+    return "PLAINTEXT";
+  }
+
+  /**
+   * oauth_signature is set to the concatenated encoded values of the Consumer Secret and
+   * Token Secret, separated by a '&' character (ASCII code 38), even if either secret is
+   * empty. The result MUST be encoded again.
+   *   - Chapter 9.4.1 ("Generating Signatures")
+   *
+   * Please note that the second encoding MUST NOT happen in the SignatureMethod, as
+   * OAuthRequest handles this!
+   */
+  public function build_signature($request, $consumer, $token) {
+    $key_parts = array(
+      $consumer->secret,
+      ($token) ? $token->secret : ""
+    );
+
+    $key_parts = OAuthUtil::urlencode_rfc3986($key_parts);
+    $key = implode('&', $key_parts);
+    $request->base_string = $key;
+
+    return $key;
+  }
+}
+
+/**
+ * The RSA-SHA1 signature method uses the RSASSA-PKCS1-v1_5 signature algorithm as defined in
+ * [RFC3447] section 8.2 (more simply known as PKCS#1), using SHA-1 as the hash function for
+ * EMSA-PKCS1-v1_5. It is assumed that the Consumer has provided its RSA public key in a
+ * verified way to the Service Provider, in a manner which is beyond the scope of this
+ * specification.
+ *   - Chapter 9.3 ("RSA-SHA1")
+ */
+abstract class OAuthSignatureMethod_RSA_SHA1 extends OAuthSignatureMethod {
+  public function get_name() {
+    return "RSA-SHA1";
+  }
+
+  // Up to the SP to implement this lookup of keys. Possible ideas are:
+  // (1) do a lookup in a table of trusted certs keyed off of consumer
+  // (2) fetch via http using a url provided by the requester
+  // (3) some sort of specific discovery code based on request
+  //
+  // Either way should return a string representation of the certificate
+  protected abstract function fetch_public_cert(&$request);
+
+  // Up to the SP to implement this lookup of keys. Possible ideas are:
+  // (1) do a lookup in a table of trusted certs keyed off of consumer
+  //
+  // Either way should return a string representation of the certificate
+  protected abstract function fetch_private_cert(&$request);
+
+  public function build_signature($request, $consumer, $token) {
+    $base_string = $request->get_signature_base_string();
+    $request->base_string = $base_string;
+
+    // Fetch the private key cert based on the request
+    $cert = $this->fetch_private_cert($request);
+
+    // Pull the private key ID from the certificate
+    $privatekeyid = openssl_get_privatekey($cert);
+
+    // Sign using the key
+    $ok = openssl_sign($base_string, $signature, $privatekeyid);
+
+    // Release the key resource
+    openssl_free_key($privatekeyid);
+
+    return base64_encode($signature);
+  }
+
+  public function check_signature($request, $consumer, $token, $signature) {
+    $decoded_sig = base64_decode($signature);
+
+    $base_string = $request->get_signature_base_string();
+
+    // Fetch the public key cert based on the request
+    $cert = $this->fetch_public_cert($request);
+
+    // Pull the public key ID from the certificate
+    $publickeyid = openssl_get_publickey($cert);
+
+    // Check the computed signature against the one passed in the query
+    $ok = openssl_verify($base_string, $decoded_sig, $publickeyid);
+
+    // Release the key resource
+    openssl_free_key($publickeyid);
+
+    return $ok == 1;
+  }
+}
+
+class OAuthRequest {
+  protected $parameters;
+  protected $http_method;
+  protected $http_url;
+  // for debug purposes
+  public $base_string;
+  public static $version = '1.0';
+  public static $POST_INPUT = 'php://input';
+
+  function __construct($http_method, $http_url, $parameters=NULL) {
+    $parameters = ($parameters) ? $parameters : array();
+    $parameters = array_merge( OAuthUtil::parse_parameters(parse_url($http_url, PHP_URL_QUERY)), $parameters);
+    $this->parameters = $parameters;
+    $this->http_method = $http_method;
+    $this->http_url = $http_url;
+  }
+
+
+  /**
+   * attempt to build up a request from what was passed to the server
+   */
+  public static function from_request($http_method=NULL, $http_url=NULL, $parameters=NULL) {
+    $scheme = (!isset($_SERVER['HTTPS']) || $_SERVER['HTTPS'] != "on")
+              ? 'http'
+              : 'https';
+    $http_url = ($http_url) ? $http_url : $scheme .
+                              '://' . $_SERVER['HTTP_HOST'] .
+                              ':' .
+                              $_SERVER['SERVER_PORT'] .
+                              $_SERVER['REQUEST_URI'];
+    $http_method = ($http_method) ? $http_method : $_SERVER['REQUEST_METHOD'];
+
+    // We weren't handed any parameters, so let's find the ones relevant to
+    // this request.
+    // If you run XML-RPC or similar you should use this to provide your own
+    // parsed parameter-list
+    if (!$parameters) {
+      // Find request headers
+      $request_headers = OAuthUtil::get_headers();
+
+      // Parse the query-string to find GET parameters
+      $parameters = OAuthUtil::parse_parameters($_SERVER['QUERY_STRING']);
+
+      // It's a POST request of the proper content-type, so parse POST
+      // parameters and add those overriding any duplicates from GET
+      if ($http_method == "POST"
+          &&  isset($request_headers['Content-Type'])
+          && strstr($request_headers['Content-Type'],
+                     'application/x-www-form-urlencoded')
+          ) {
+        $post_data = OAuthUtil::parse_parameters(
+          file_get_contents(self::$POST_INPUT)
+        );
+        $parameters = array_merge($parameters, $post_data);
+      }
+
+      // We have a Authorization-header with OAuth data. Parse the header
+      // and add those overriding any duplicates from GET or POST
+      if (isset($request_headers['Authorization']) && substr($request_headers['Authorization'], 0, 6) == 'OAuth ') {
+        $header_parameters = OAuthUtil::split_header(
+          $request_headers['Authorization']
+        );
+        $parameters = array_merge($parameters, $header_parameters);
+      }
+
+    }
+
+    return new OAuthRequest($http_method, $http_url, $parameters);
+  }
+
+  /**
+   * pretty much a helper function to set up the request
+   */
+  public static function from_consumer_and_token($consumer, $token, $http_method, $http_url, $parameters=NULL) {
+    $parameters = ($parameters) ?  $parameters : array();
+    $defaults = array("oauth_version" => OAuthRequest::$version,
+                      "oauth_nonce" => OAuthRequest::generate_nonce(),
+                      "oauth_timestamp" => OAuthRequest::generate_timestamp(),
+                      "oauth_consumer_key" => $consumer->key);
+    if ($token)
+      $defaults['oauth_token'] = $token->key;
+
+    $parameters = array_merge($defaults, $parameters);
+
+    return new OAuthRequest($http_method, $http_url, $parameters);
+  }
+
+  public function set_parameter($name, $value, $allow_duplicates = true) {
+    if ($allow_duplicates && isset($this->parameters[$name])) {
+      // We have already added parameter(s) with this name, so add to the list
+      if (is_scalar($this->parameters[$name])) {
+        // This is the first duplicate, so transform scalar (string)
+        // into an array so we can add the duplicates
+        $this->parameters[$name] = array($this->parameters[$name]);
+      }
+
+      $this->parameters[$name][] = $value;
+    } else {
+      $this->parameters[$name] = $value;
+    }
+  }
+
+  public function get_parameter($name) {
+    return isset($this->parameters[$name]) ? $this->parameters[$name] : null;
+  }
+
+  public function get_parameters() {
+    return $this->parameters;
+  }
+
+  public function unset_parameter($name) {
+    unset($this->parameters[$name]);
+  }
+
+  /**
+   * The request parameters, sorted and concatenated into a normalized string.
+   * @return string
+   */
+  public function get_signable_parameters() {
+    // Grab all parameters
+    $params = $this->parameters;
+
+    // Remove oauth_signature if present
+    // Ref: Spec: 9.1.1 ("The oauth_signature parameter MUST be excluded.")
+    if (isset($params['oauth_signature'])) {
+      unset($params['oauth_signature']);
+    }
+
+    return OAuthUtil::build_http_query($params);
+  }
+
+  /**
+   * Returns the base string of this request
+   *
+   * The base string defined as the method, the url
+   * and the parameters (normalized), each urlencoded
+   * and the concated with &.
+   */
+  public function get_signature_base_string() {
+    $parts = array(
+      $this->get_normalized_http_method(),
+      $this->get_normalized_http_url(),
+      $this->get_signable_parameters()
+    );
+
+    $parts = OAuthUtil::urlencode_rfc3986($parts);
+
+    return implode('&', $parts);
+  }
+
+  /**
+   * just uppercases the http method
+   */
+  public function get_normalized_http_method() {
+    return strtoupper($this->http_method);
+  }
+
+  /**
+   * parses the url and rebuilds it to be
+   * scheme://host/path
+   */
+  public function get_normalized_http_url() {
+    $parts = parse_url($this->http_url);
+
+    $scheme = (isset($parts['scheme'])) ? $parts['scheme'] : 'http';
+    $port = (isset($parts['port'])) ? $parts['port'] : (($scheme == 'https') ? '443' : '80');
+    $host = (isset($parts['host'])) ? $parts['host'] : '';
+    $path = (isset($parts['path'])) ? $parts['path'] : '';
+
+    if (($scheme == 'https' && $port != '443')
+        || ($scheme == 'http' && $port != '80')) {
+      $host = "$host:$port";
+    }
+    return "$scheme://$host$path";
+  }
+
+  /**
+   * builds a url usable for a GET request
+   */
+  public function to_url() {
+    $post_data = $this->to_postdata();
+    $out = $this->get_normalized_http_url();
+    if ($post_data) {
+      $out .= '?'.$post_data;
+    }
+    return $out;
+  }
+
+  /**
+   * builds the data one would send in a POST request
+   */
+  public function to_postdata() {
+    return OAuthUtil::build_http_query($this->parameters);
+  }
+
+  /**
+   * builds the Authorization: header
+   */
+  public function to_header($realm=null) {
+    $first = true;
+	if($realm) {
+      $out = 'Authorization: OAuth realm="' . OAuthUtil::urlencode_rfc3986($realm) . '"';
+      $first = false;
+    } else
+      $out = 'Authorization: OAuth';
+
+    $total = array();
+    foreach ($this->parameters as $k => $v) {
+      if (substr($k, 0, 5) != "oauth") continue;
+      if (is_array($v)) {
+        throw new OAuthException('Arrays not supported in headers');
+      }
+      $out .= ($first) ? ' ' : ',';
+      $out .= OAuthUtil::urlencode_rfc3986($k) .
+              '="' .
+              OAuthUtil::urlencode_rfc3986($v) .
+              '"';
+      $first = false;
+    }
+    return $out;
+  }
+
+  public function __toString() {
+    return $this->to_url();
+  }
+
+
+  public function sign_request($signature_method, $consumer, $token) {
+    $this->set_parameter(
+      "oauth_signature_method",
+      $signature_method->get_name(),
+      false
+    );
+    $signature = $this->build_signature($signature_method, $consumer, $token);
+    $this->set_parameter("oauth_signature", $signature, false);
+  }
+
+  public function build_signature($signature_method, $consumer, $token) {
+    $signature = $signature_method->build_signature($this, $consumer, $token);
+    return $signature;
+  }
+
+  /**
+   * util function: current timestamp
+   */
+  private static function generate_timestamp() {
+    return time();
+  }
+
+  /**
+   * util function: current nonce
+   */
+  public static function generate_nonce() {
+    $mt = microtime();
+    $rand = mt_rand();
+
+    return md5($mt . $rand); // md5s look nicer than numbers
+  }
+}
+
+class OAuthServer {
+  protected $timestamp_threshold = 300; // in seconds, five minutes
+  protected $version = '1.0';             // hi blaine
+  protected $signature_methods = array();
+
+  protected $data_store;
+
+  function __construct($data_store) {
+    $this->data_store = $data_store;
+  }
+
+  public function add_signature_method($signature_method) {
+    $this->signature_methods[$signature_method->get_name()] =
+      $signature_method;
+  }
+
+  // high level functions
+
+  /**
+   * process a request_token request
+   * returns the request token on success
+   */
+  public function fetch_request_token(&$request) {
+    $this->get_version($request);
+
+    $consumer = $this->get_consumer($request);
+
+    // no token required for the initial token request
+    $token = NULL;
+
+    $this->check_signature($request, $consumer, $token);
+
+    // Rev A change
+    $callback = $request->get_parameter('oauth_callback');
+    $new_token = $this->data_store->new_request_token($consumer, $callback);
+
+    return $new_token;
+  }
+
+  /**
+   * process an access_token request
+   * returns the access token on success
+   */
+  public function fetch_access_token(&$request) {
+    $this->get_version($request);
+
+    $consumer = $this->get_consumer($request);
+
+    // requires authorized request token
+    $token = $this->get_token($request, $consumer, "request");
+
+    $this->check_signature($request, $consumer, $token);
+
+    // Rev A change
+    $verifier = $request->get_parameter('oauth_verifier');
+    $new_token = $this->data_store->new_access_token($token, $consumer, $verifier);
+
+    return $new_token;
+  }
+
+  /**
+   * verify an api call, checks all the parameters
+   */
+  public function verify_request(&$request) {
+    $this->get_version($request);
+    $consumer = $this->get_consumer($request);
+    $token = $this->get_token($request, $consumer, "access");
+    $this->check_signature($request, $consumer, $token);
+    return array($consumer, $token);
+  }
+
+  // Internals from here
+  /**
+   * version 1
+   */
+  private function get_version(&$request) {
+    $version = $request->get_parameter("oauth_version");
+    if (!$version) {
+      // Service Providers MUST assume the protocol version to be 1.0 if this parameter is not present.
+      // Chapter 7.0 ("Accessing Protected Ressources")
+      $version = '1.0';
+    }
+    if ($version !== $this->version) {
+      throw new OAuthException("OAuth version '$version' not supported");
+    }
+    return $version;
+  }
+
+  /**
+   * figure out the signature with some defaults
+   */
+  private function get_signature_method($request) {
+    $signature_method = $request instanceof OAuthRequest
+        ? $request->get_parameter("oauth_signature_method")
+        : NULL;
+
+    if (!$signature_method) {
+      // According to chapter 7 ("Accessing Protected Ressources") the signature-method
+      // parameter is required, and we can't just fallback to PLAINTEXT
+      throw new OAuthException('No signature method parameter. This parameter is required');
+    }
+
+    if (!in_array($signature_method,
+                  array_keys($this->signature_methods))) {
+      throw new OAuthException(
+        "Signature method '$signature_method' not supported " .
+        "try one of the following: " .
+        implode(", ", array_keys($this->signature_methods))
+      );
+    }
+    return $this->signature_methods[$signature_method];
+  }
+
+  /**
+   * try to find the consumer for the provided request's consumer key
+   */
+  private function get_consumer($request) {
+    $consumer_key = $request instanceof OAuthRequest
+        ? $request->get_parameter("oauth_consumer_key")
+        : NULL;
+
+    if (!$consumer_key) {
+      throw new OAuthException("Invalid consumer key");
+    }
+
+    $consumer = $this->data_store->lookup_consumer($consumer_key);
+    if (!$consumer) {
+      throw new OAuthException("Invalid consumer");
+    }
+
+    return $consumer;
+  }
+
+  /**
+   * try to find the token for the provided request's token key
+   */
+  private function get_token($request, $consumer, $token_type="access") {
+    $token_field = $request instanceof OAuthRequest
+         ? $request->get_parameter('oauth_token')
+         : NULL;
+
+    $token = $this->data_store->lookup_token(
+      $consumer, $token_type, $token_field
+    );
+    if (!$token) {
+      throw new OAuthException("Invalid $token_type token: $token_field");
+    }
+    return $token;
+  }
+
+  /**
+   * all-in-one function to check the signature on a request
+   * should guess the signature method appropriately
+   */
+  private function check_signature($request, $consumer, $token) {
+    // this should probably be in a different method
+    $timestamp = $request instanceof OAuthRequest
+        ? $request->get_parameter('oauth_timestamp')
+        : NULL;
+    $nonce = $request instanceof OAuthRequest
+        ? $request->get_parameter('oauth_nonce')
+        : NULL;
+
+    $this->check_timestamp($timestamp);
+    $this->check_nonce($consumer, $token, $nonce, $timestamp);
+
+    $signature_method = $this->get_signature_method($request);
+
+    $signature = $request->get_parameter('oauth_signature');
+    $valid_sig = $signature_method->check_signature(
+      $request,
+      $consumer,
+      $token,
+      $signature
+    );
+
+    if (!$valid_sig) {
+      throw new OAuthException("Invalid signature");
+    }
+  }
+
+  /**
+   * check that the timestamp is new enough
+   */
+  private function check_timestamp($timestamp) {
+    if( ! $timestamp )
+      throw new OAuthException(
+        'Missing timestamp parameter. The parameter is required'
+      );
+
+    // verify that timestamp is recentish
+    $now = time();
+    if (abs($now - $timestamp) > $this->timestamp_threshold) {
+      throw new OAuthException(
+        "Expired timestamp, yours $timestamp, ours $now"
+      );
+    }
+  }
+
+  /**
+   * check that the nonce is not repeated
+   */
+  private function check_nonce($consumer, $token, $nonce, $timestamp) {
+    if( ! $nonce )
+      throw new OAuthException(
+        'Missing nonce parameter. The parameter is required'
+      );
+
+    // verify that the nonce is uniqueish
+    $found = $this->data_store->lookup_nonce(
+      $consumer,
+      $token,
+      $nonce,
+      $timestamp
+    );
+    if ($found) {
+      throw new OAuthException("Nonce already used: $nonce");
+    }
+  }
+
+}
+
+class OAuthDataStore {
+  function lookup_consumer($consumer_key) {
+    // implement me
+  }
+
+  function lookup_token($consumer, $token_type, $token) {
+    // implement me
+  }
+
+  function lookup_nonce($consumer, $token, $nonce, $timestamp) {
+    // implement me
+  }
+
+  function new_request_token($consumer, $callback = null) {
+    // return a new token attached to this consumer
+  }
+
+  function new_access_token($token, $consumer, $verifier = null) {
+    // return a new access token attached to this consumer
+    // for the user associated with this token if the request token
+    // is authorized
+    // should also invalidate the request token
+  }
+
+}
+
+class OAuthUtil {
+  public static function urlencode_rfc3986($input) {
+  if (is_array($input)) {
+    return array_map(array('OAuthUtil', 'urlencode_rfc3986'), $input);
+  } else if (is_scalar($input)) {
+    return str_replace(
+      '+',
+      ' ',
+      str_replace('%7E', '~', rawurlencode($input))
+    );
+  } else {
+    return '';
+  }
+}
+
+
+  // This decode function isn't taking into consideration the above
+  // modifications to the encoding process. However, this method doesn't
+  // seem to be used anywhere so leaving it as is.
+  public static function urldecode_rfc3986($string) {
+    return urldecode($string);
+  }
+
+  // Utility function for turning the Authorization: header into
+  // parameters, has to do some unescaping
+  // Can filter out any non-oauth parameters if needed (default behaviour)
+  // May 28th, 2010 - method updated to tjerk.meesters for a speed improvement.
+  //                  see http://code.google.com/p/oauth/issues/detail?id=163
+  public static function split_header($header, $only_allow_oauth_parameters = true) {
+    $params = array();
+    if (preg_match_all('/('.($only_allow_oauth_parameters ? 'oauth_' : '').'[a-z_-]*)=(:?"([^"]*)"|([^,]*))/', $header, $matches)) {
+      foreach ($matches[1] as $i => $h) {
+        $params[$h] = OAuthUtil::urldecode_rfc3986(empty($matches[3][$i]) ? $matches[4][$i] : $matches[3][$i]);
+      }
+      if (isset($params['realm'])) {
+        unset($params['realm']);
+      }
+    }
+    return $params;
+  }
+
+  // helper to try to sort out headers for people who aren't running apache
+  public static function get_headers() {
+    if (function_exists('apache_request_headers')) {
+      // we need this to get the actual Authorization: header
+      // because apache tends to tell us it doesn't exist
+      $headers = apache_request_headers();
+
+      // sanitize the output of apache_request_headers because
+      // we always want the keys to be Cased-Like-This and arh()
+      // returns the headers in the same case as they are in the
+      // request
+      $out = array();
+      foreach ($headers AS $key => $value) {
+        $key = str_replace(
+            " ",
+            "-",
+            ucwords(strtolower(str_replace("-", " ", $key)))
+          );
+        $out[$key] = $value;
+      }
+    } else {
+      // otherwise we don't have apache and are just going to have to hope
+      // that $_SERVER actually contains what we need
+      $out = array();
+      if( isset($_SERVER['CONTENT_TYPE']) )
+        $out['Content-Type'] = $_SERVER['CONTENT_TYPE'];
+      if( isset($_ENV['CONTENT_TYPE']) )
+        $out['Content-Type'] = $_ENV['CONTENT_TYPE'];
+
+      foreach ($_SERVER as $key => $value) {
+        if (substr($key, 0, 5) == "HTTP_") {
+          // this is chaos, basically it is just there to capitalize the first
+          // letter of every word that is not an initial HTTP and strip HTTP
+          // code from przemek
+          $key = str_replace(
+            " ",
+            "-",
+            ucwords(strtolower(str_replace("_", " ", substr($key, 5))))
+          );
+          $out[$key] = $value;
+        }
+      }
+    }
+    return $out;
+  }
+
+  // This function takes a input like a=b&a=c&d=e and returns the parsed
+  // parameters like this
+  // array('a' => array('b','c'), 'd' => 'e')
+  public static function parse_parameters( $input ) {
+    if (!isset($input) || !$input) return array();
+
+    $pairs = explode('&', $input);
+
+    $parsed_parameters = array();
+    foreach ($pairs as $pair) {
+      $split = explode('=', $pair, 2);
+      $parameter = OAuthUtil::urldecode_rfc3986($split[0]);
+      $value = isset($split[1]) ? OAuthUtil::urldecode_rfc3986($split[1]) : '';
+
+      if (isset($parsed_parameters[$parameter])) {
+        // We have already recieved parameter(s) with this name, so add to the list
+        // of parameters with this name
+
+        if (is_scalar($parsed_parameters[$parameter])) {
+          // This is the first duplicate, so transform scalar (string) into an array
+          // so we can add the duplicates
+          $parsed_parameters[$parameter] = array($parsed_parameters[$parameter]);
+        }
+
+        $parsed_parameters[$parameter][] = $value;
+      } else {
+        $parsed_parameters[$parameter] = $value;
+      }
+    }
+    return $parsed_parameters;
+  }
+
+  public static function build_http_query($params) {
+    if (!$params) return '';
+
+    // Urlencode both keys and values
+    $keys = OAuthUtil::urlencode_rfc3986(array_keys($params));
+    $values = OAuthUtil::urlencode_rfc3986(array_values($params));
+    $params = array_combine($keys, $values);
+
+    // Parameters are sorted by name, using lexicographical byte value ordering.
+    // Ref: Spec: 9.1.1 (1)
+    uksort($params, 'strcmp');
+
+    $pairs = array();
+    foreach ($params as $parameter => $value) {
+      if (is_array($value)) {
+        // If two or more parameters share the same name, they are sorted by their value
+        // Ref: Spec: 9.1.1 (1)
+        // June 12th, 2010 - changed to sort because of issue 164 by hidetaka
+        sort($value, SORT_STRING);
+        foreach ($value as $duplicate_value) {
+          $pairs[] = $parameter . '=' . $duplicate_value;
+        }
+      } else {
+        $pairs[] = $parameter . '=' . $value;
+      }
+    }
+    // For each parameter, the name is separated from the corresponding value by an '=' character (ASCII code 61)
+    // Each name-value pair is separated by an '&' character (ASCII code 38)
+    return implode('&', $pairs);
+  }
+}
+// src/facebook-sdk-2.1.2.php
+
+
+if (!class_exists('Facebook')):
+
+if (!function_exists('curl_init')) {
+  throw new Exception('Facebook needs the CURL PHP extension.');
+}
+if (!function_exists('json_decode')) {
+  throw new Exception('Facebook needs the JSON PHP extension.');
+}
+
+/**
+ * Thrown when an API call returns an exception.
  *
- * Copyright (C)2008-2010 Collegeman.net, LLC.
+ * @author Naitik Shah <naitik@facebook.com>
+ */
+class FacebookApiException extends Exception
+{
+  /**
+   * The result from the API server that represents the exception information.
+   */
+  protected $result;
+
+  /**
+   * Make a new API Exception with the given result.
+   *
+   * @param Array $result the result from the API server
+   */
+  public function __construct($result) {
+    $this->result = $result;
+
+    $code = isset($result['error_code']) ? $result['error_code'] : 0;
+    $msg  = isset($result['error'])
+              ? $result['error']['message'] : $result['error_msg'];
+    parent::__construct($msg, $code);
+  }
+
+  /**
+   * Return the associated result object returned by the API server.
+   *
+   * @returns Array the result from the API server
+   */
+  public function getResult() {
+    return $this->result;
+  }
+
+  /**
+   * Returns the associated type for the error. This will default to
+   * 'Exception' when a type is not available.
+   *
+   * @return String
+   */
+  public function getType() {
+    return
+      isset($this->result['error']) && isset($this->result['error']['type'])
+      ? $this->result['error']['type']
+      : 'Exception';
+  }
+
+  /**
+   * To make debugging easier.
+   *
+   * @returns String the string representation of the error
+   */
+  public function __toString() {
+    $str = $this->getType() . ': ';
+    if ($this->code != 0) {
+      $str .= $this->code . ': ';
+    }
+    return $str . $this->message;
+  }
+}
+
+/**
+ * Provides access to the Facebook Platform.
+ *
+ * @author Naitik Shah <naitik@facebook.com>
+ */
+class Facebook
+{
+  /**
+   * Version.
+   */
+  const VERSION = '2.1.1';
+
+  /**
+   * Default options for curl.
+   */
+  public static $CURL_OPTS = array(
+    CURLOPT_CONNECTTIMEOUT => 10,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_TIMEOUT        => 60,
+    CURLOPT_USERAGENT      => 'facebook-php-2.0',
+  );
+
+  /**
+   * List of query parameters that get automatically dropped when rebuilding
+   * the current URL.
+   */
+  protected static $DROP_QUERY_PARAMS = array(
+    'session',
+    'signed_request',
+  );
+
+  /**
+   * Maps aliases to Facebook domains.
+   */
+  public static $DOMAIN_MAP = array(
+    'api'      => 'https://api.facebook.com/',
+    'api_read' => 'https://api-read.facebook.com/',
+    'graph'    => 'https://graph.facebook.com/',
+    'www'      => 'https://www.facebook.com/',
+  );
+
+  /**
+   * The Application ID.
+   */
+  protected $appId;
+
+  /**
+   * The Application API Secret.
+   */
+  protected $apiSecret;
+
+  /**
+   * The active user session, if one is available.
+   */
+  protected $session;
+
+  /**
+   * The data from the signed_request token.
+   */
+  protected $signedRequest;
+
+  /**
+   * Indicates that we already loaded the session as best as we could.
+   */
+  protected $sessionLoaded = false;
+
+  /**
+   * Indicates if Cookie support should be enabled.
+   */
+  protected $cookieSupport = false;
+
+  /**
+   * Base domain for the Cookie.
+   */
+  protected $baseDomain = '';
+
+  /**
+   * Indicates if the CURL based @ syntax for file uploads is enabled.
+   */
+  protected $fileUploadSupport = false;
+
+  /**
+   * Initialize a Facebook Application.
+   *
+   * The configuration:
+   * - appId: the application ID
+   * - secret: the application secret
+   * - cookie: (optional) boolean true to enable cookie support
+   * - domain: (optional) domain for the cookie
+   * - fileUpload: (optional) boolean indicating if file uploads are enabled
+   *
+   * @param Array $config the application configuration
+   */
+  public function __construct($config) {
+    $this->setAppId($config['appId']);
+    $this->setApiSecret($config['secret']);
+    if (isset($config['cookie'])) {
+      $this->setCookieSupport($config['cookie']);
+    }
+    if (isset($config['domain'])) {
+      $this->setBaseDomain($config['domain']);
+    }
+    if (isset($config['fileUpload'])) {
+      $this->setFileUploadSupport($config['fileUpload']);
+    }
+  }
+
+  /**
+   * Set the Application ID.
+   *
+   * @param String $appId the Application ID
+   */
+  public function setAppId($appId) {
+    $this->appId = $appId;
+    return $this;
+  }
+
+  /**
+   * Get the Application ID.
+   *
+   * @return String the Application ID
+   */
+  public function getAppId() {
+    return $this->appId;
+  }
+
+  /**
+   * Set the API Secret.
+   *
+   * @param String $appId the API Secret
+   */
+  public function setApiSecret($apiSecret) {
+    $this->apiSecret = $apiSecret;
+    return $this;
+  }
+
+  /**
+   * Get the API Secret.
+   *
+   * @return String the API Secret
+   */
+  public function getApiSecret() {
+    return $this->apiSecret;
+  }
+
+  /**
+   * Set the Cookie Support status.
+   *
+   * @param Boolean $cookieSupport the Cookie Support status
+   */
+  public function setCookieSupport($cookieSupport) {
+    $this->cookieSupport = $cookieSupport;
+    return $this;
+  }
+
+  /**
+   * Get the Cookie Support status.
+   *
+   * @return Boolean the Cookie Support status
+   */
+  public function useCookieSupport() {
+    return $this->cookieSupport;
+  }
+
+  /**
+   * Set the base domain for the Cookie.
+   *
+   * @param String $domain the base domain
+   */
+  public function setBaseDomain($domain) {
+    $this->baseDomain = $domain;
+    return $this;
+  }
+
+  /**
+   * Get the base domain for the Cookie.
+   *
+   * @return String the base domain
+   */
+  public function getBaseDomain() {
+    return $this->baseDomain;
+  }
+
+  /**
+   * Set the file upload support status.
+   *
+   * @param String $domain the base domain
+   */
+  public function setFileUploadSupport($fileUploadSupport) {
+    $this->fileUploadSupport = $fileUploadSupport;
+    return $this;
+  }
+
+  /**
+   * Get the file upload support status.
+   *
+   * @return String the base domain
+   */
+  public function useFileUploadSupport() {
+    return $this->fileUploadSupport;
+  }
+
+  /**
+   * Get the data from a signed_request token
+   *
+   * @return String the base domain
+   */
+  public function getSignedRequest() {
+    if (!$this->signedRequest) {
+      if (isset($_REQUEST['signed_request'])) {
+        $this->signedRequest = $this->parseSignedRequest(
+          $_REQUEST['signed_request']);
+      }
+    }
+    return $this->signedRequest;
+  }
+
+  /**
+   * Set the Session.
+   *
+   * @param Array $session the session
+   * @param Boolean $write_cookie indicate if a cookie should be written. this
+   * value is ignored if cookie support has been disabled.
+   */
+  public function setSession($session=null, $write_cookie=true) {
+    $session = $this->validateSessionObject($session);
+    $this->sessionLoaded = true;
+    $this->session = $session;
+    if ($write_cookie) {
+      $this->setCookieFromSession($session);
+    }
+    return $this;
+  }
+
+  /**
+   * Get the session object. This will automatically look for a signed session
+   * sent via the signed_request, Cookie or Query Parameters if needed.
+   *
+   * @return Array the session
+   */
+  public function getSession() {
+    if (!$this->sessionLoaded) {
+      $session = null;
+      $write_cookie = true;
+
+      // try loading session from signed_request in $_REQUEST
+      $signedRequest = $this->getSignedRequest();
+      if ($signedRequest) {
+        // sig is good, use the signedRequest
+        $session = $this->createSessionFromSignedRequest($signedRequest);
+      }
+
+      // try loading session from $_REQUEST
+      if (!$session && isset($_REQUEST['session'])) {
+        $session = json_decode(
+          get_magic_quotes_gpc()
+            ? stripslashes($_REQUEST['session'])
+            : $_REQUEST['session'],
+          true
+        );
+        $session = $this->validateSessionObject($session);
+      }
+
+      // try loading session from cookie if necessary
+      if (!$session && $this->useCookieSupport()) {
+        $cookieName = $this->getSessionCookieName();
+        if (isset($_COOKIE[$cookieName])) {
+          $session = array();
+          parse_str(trim(
+            get_magic_quotes_gpc()
+              ? stripslashes($_COOKIE[$cookieName])
+              : $_COOKIE[$cookieName],
+            '"'
+          ), $session);
+          $session = $this->validateSessionObject($session);
+          // write only if we need to delete a invalid session cookie
+          $write_cookie = empty($session);
+        }
+      }
+
+      $this->setSession($session, $write_cookie);
+    }
+
+    return $this->session;
+  }
+
+  /**
+   * Get the UID from the session.
+   *
+   * @return String the UID if available
+   */
+  public function getUser() {
+    $session = $this->getSession();
+    return $session ? $session['uid'] : null;
+  }
+
+  /**
+   * Gets a OAuth access token.
+   *
+   * @return String the access token
+   */
+  public function getAccessToken() {
+    $session = $this->getSession();
+    // either user session signed, or app signed
+    if ($session) {
+      return $session['access_token'];
+    } else {
+      return $this->getAppId() .'|'. $this->getApiSecret();
+    }
+  }
+
+  /**
+   * Get a Login URL for use with redirects. By default, full page redirect is
+   * assumed. If you are using the generated URL with a window.open() call in
+   * JavaScript, you can pass in display=popup as part of the $params.
+   *
+   * The parameters:
+   * - next: the url to go to after a successful login
+   * - cancel_url: the url to go to after the user cancels
+   * - req_perms: comma separated list of requested extended perms
+   * - display: can be "page" (default, full page) or "popup"
+   *
+   * @param Array $params provide custom parameters
+   * @return String the URL for the login flow
+   */
+  public function getLoginUrl($params=array()) {
+    $currentUrl = $this->getCurrentUrl();
+    return $this->getUrl(
+      'www',
+      'login.php',
+      array_merge(array(
+        'api_key'         => $this->getAppId(),
+        'cancel_url'      => $currentUrl,
+        'display'         => 'page',
+        'fbconnect'       => 1,
+        'next'            => $currentUrl,
+        'return_session'  => 1,
+        'session_version' => 3,
+        'v'               => '1.0',
+      ), $params)
+    );
+  }
+
+  /**
+   * Get a Logout URL suitable for use with redirects.
+   *
+   * The parameters:
+   * - next: the url to go to after a successful logout
+   *
+   * @param Array $params provide custom parameters
+   * @return String the URL for the logout flow
+   */
+  public function getLogoutUrl($params=array()) {
+    return $this->getUrl(
+      'www',
+      'logout.php',
+      array_merge(array(
+        'next'         => $this->getCurrentUrl(),
+        'access_token' => $this->getAccessToken(),
+      ), $params)
+    );
+  }
+
+  /**
+   * Get a login status URL to fetch the status from facebook.
+   *
+   * The parameters:
+   * - ok_session: the URL to go to if a session is found
+   * - no_session: the URL to go to if the user is not connected
+   * - no_user: the URL to go to if the user is not signed into facebook
+   *
+   * @param Array $params provide custom parameters
+   * @return String the URL for the logout flow
+   */
+  public function getLoginStatusUrl($params=array()) {
+    return $this->getUrl(
+      'www',
+      'extern/login_status.php',
+      array_merge(array(
+        'api_key'         => $this->getAppId(),
+        'no_session'      => $this->getCurrentUrl(),
+        'no_user'         => $this->getCurrentUrl(),
+        'ok_session'      => $this->getCurrentUrl(),
+        'session_version' => 3,
+      ), $params)
+    );
+  }
+
+  /**
+   * Make an API call.
+   *
+   * @param Array $params the API call parameters
+   * @return the decoded response
+   */
+  public function api(/* polymorphic */) {
+    $args = func_get_args();
+    if (is_array($args[0])) {
+      return $this->_restserver($args[0]);
+    } else {
+      return call_user_func_array(array($this, '_graph'), $args);
+    }
+  }
+
+  /**
+   * Invoke the old restserver.php endpoint.
+   *
+   * @param Array $params method call object
+   * @return the decoded response object
+   * @throws FacebookApiException
+   */
+  protected function _restserver($params) {
+    // generic application level parameters
+    $params['api_key'] = $this->getAppId();
+    $params['format'] = 'json-strings';
+
+    $result = json_decode($this->_oauthRequest(
+      $this->getApiUrl($params['method']),
+      $params
+    ), true);
+
+    // results are returned, errors are thrown
+    if (is_array($result) && isset($result['error_code'])) {
+      throw new FacebookApiException($result);
+    }
+    return $result;
+  }
+
+  /**
+   * Invoke the Graph API.
+   *
+   * @param String $path the path (required)
+   * @param String $method the http method (default 'GET')
+   * @param Array $params the query/post data
+   * @return the decoded response object
+   * @throws FacebookApiException
+   */
+  protected function _graph($path, $method='GET', $params=array()) {
+    if (is_array($method) && empty($params)) {
+      $params = $method;
+      $method = 'GET';
+    }
+    $params['method'] = $method; // method override as we always do a POST
+
+    $result = json_decode($this->_oauthRequest(
+      $this->getUrl('graph', $path),
+      $params
+    ), true);
+
+    // results are returned, errors are thrown
+    if (is_array($result) && isset($result['error'])) {
+      $e = new FacebookApiException($result);
+      if ($e->getType() === 'OAuthException') {
+        $this->setSession(null);
+      }
+      throw $e;
+    }
+    return $result;
+  }
+
+  /**
+   * Make a OAuth Request
+   *
+   * @param String $path the path (required)
+   * @param Array $params the query/post data
+   * @return the decoded response object
+   * @throws FacebookApiException
+   */
+  protected function _oauthRequest($url, $params) {
+    if (!isset($params['access_token'])) {
+      $params['access_token'] = $this->getAccessToken();
+    }
+
+    // json_encode all params values that are not strings
+    foreach ($params as $key => $value) {
+      if (!is_string($value)) {
+        $params[$key] = json_encode($value);
+      }
+    }
+    return $this->makeRequest($url, $params);
+  }
+
+  /**
+   * Makes an HTTP request. This method can be overriden by subclasses if
+   * developers want to do fancier things or use something other than curl to
+   * make the request.
+   *
+   * @param String $url the URL to make the request to
+   * @param Array $params the parameters to use for the POST body
+   * @param CurlHandler $ch optional initialized curl handle
+   * @return String the response text
+   */
+  protected function makeRequest($url, $params, $ch=null) {
+    if (!$ch) {
+      $ch = curl_init();
+    }
+
+    $opts = self::$CURL_OPTS;
+    if ($this->useFileUploadSupport()) {
+      $opts[CURLOPT_POSTFIELDS] = $params;
+    } else {
+      $opts[CURLOPT_POSTFIELDS] = http_build_query($params, null, '&');
+    }
+    $opts[CURLOPT_URL] = $url;
+
+    // disable the 'Expect: 100-continue' behaviour. This causes CURL to wait
+    // for 2 seconds if the server does not support this header.
+    if (isset($opts[CURLOPT_HTTPHEADER])) {
+      $existing_headers = $opts[CURLOPT_HTTPHEADER];
+      $existing_headers[] = 'Expect:';
+      $opts[CURLOPT_HTTPHEADER] = $existing_headers;
+    } else {
+      $opts[CURLOPT_HTTPHEADER] = array('Expect:');
+    }
+
+    curl_setopt_array($ch, $opts);
+    $result = curl_exec($ch);
+    if ($result === false) {
+      $e = new FacebookApiException(array(
+        'error_code' => curl_errno($ch),
+        'error'      => array(
+          'message' => curl_error($ch),
+          'type'    => 'CurlException',
+        ),
+      ));
+      curl_close($ch);
+      throw $e;
+    }
+    curl_close($ch);
+    return $result;
+  }
+
+  /**
+   * The name of the Cookie that contains the session.
+   *
+   * @return String the cookie name
+   */
+  protected function getSessionCookieName() {
+    return 'fbs_' . $this->getAppId();
+  }
+
+  /**
+   * Set a JS Cookie based on the _passed in_ session. It does not use the
+   * currently stored session -- you need to explicitly pass it in.
+   *
+   * @param Array $session the session to use for setting the cookie
+   */
+  protected function setCookieFromSession($session=null) {
+    if (!$this->useCookieSupport()) {
+      return;
+    }
+
+    $cookieName = $this->getSessionCookieName();
+    $value = 'deleted';
+    $expires = time() - 3600;
+    $domain = $this->getBaseDomain();
+    if ($session) {
+      $value = '"' . http_build_query($session, null, '&') . '"';
+      if (isset($session['base_domain'])) {
+        $domain = $session['base_domain'];
+      }
+      $expires = $session['expires'];
+    }
+
+    // prepend dot if a domain is found
+    if ($domain) {
+      $domain = '.' . $domain;
+    }
+
+    // if an existing cookie is not set, we dont need to delete it
+    if ($value == 'deleted' && empty($_COOKIE[$cookieName])) {
+      return;
+    }
+
+    if (headers_sent()) {
+      self::errorLog('Could not set cookie. Headers already sent.');
+
+    // ignore for code coverage as we will never be able to setcookie in a CLI
+    // environment
+    // @codeCoverageIgnoreStart
+    } else {
+      setcookie($cookieName, $value, $expires, '/', $domain);
+    }
+    // @codeCoverageIgnoreEnd
+  }
+
+  /**
+   * Validates a session_version=3 style session object.
+   *
+   * @param Array $session the session object
+   * @return Array the session object if it validates, null otherwise
+   */
+  protected function validateSessionObject($session) {
+    // make sure some essential fields exist
+    if (is_array($session) &&
+        isset($session['uid']) &&
+        isset($session['access_token']) &&
+        isset($session['sig'])) {
+      // validate the signature
+      $session_without_sig = $session;
+      unset($session_without_sig['sig']);
+      $expected_sig = self::generateSignature(
+        $session_without_sig,
+        $this->getApiSecret()
+      );
+      if ($session['sig'] != $expected_sig) {
+        self::errorLog('Got invalid session signature in cookie.');
+        $session = null;
+      }
+      // check expiry time
+    } else {
+      $session = null;
+    }
+    return $session;
+  }
+
+  /**
+   * Returns something that looks like our JS session object from the
+   * signed token's data
+   *
+   * TODO: Nuke this once the login flow uses OAuth2
+   *
+   * @param Array the output of getSignedRequest
+   * @return Array Something that will work as a session
+   */
+  protected function createSessionFromSignedRequest($data) {
+    if (!isset($data['oauth_token'])) {
+      return null;
+    }
+
+    $session = array(
+      'uid'          => $data['user_id'],
+      'access_token' => $data['oauth_token'],
+      'expires'      => $data['expires'],
+    );
+
+    // put a real sig, so that validateSignature works
+    $session['sig'] = self::generateSignature(
+      $session,
+      $this->getApiSecret()
+    );
+
+    return $session;
+  }
+
+  /**
+   * Parses a signed_request and validates the signature.
+   * Then saves it in $this->signed_data
+   *
+   * @param String A signed token
+   * @param Boolean Should we remove the parts of the payload that
+   *                are used by the algorithm?
+   * @return Array the payload inside it or null if the sig is wrong
+   */
+  protected function parseSignedRequest($signed_request) {
+    list($encoded_sig, $payload) = explode('.', $signed_request, 2);
+
+    // decode the data
+    $sig = self::base64UrlDecode($encoded_sig);
+    $data = json_decode(self::base64UrlDecode($payload), true);
+
+    if (strtoupper($data['algorithm']) !== 'HMAC-SHA256') {
+      self::errorLog('Unknown algorithm. Expected HMAC-SHA256');
+      return null;
+    }
+
+    // check sig
+    $expected_sig = hash_hmac('sha256', $payload,
+                              $this->getApiSecret(), $raw = true);
+    if ($sig !== $expected_sig) {
+      self::errorLog('Bad Signed JSON signature!');
+      return null;
+    }
+
+    return $data;
+  }
+
+  /**
+   * Build the URL for api given parameters.
+   *
+   * @param $method String the method name.
+   * @return String the URL for the given parameters
+   */
+  protected function getApiUrl($method) {
+    static $READ_ONLY_CALLS =
+      array('admin.getallocation' => 1,
+            'admin.getappproperties' => 1,
+            'admin.getbannedusers' => 1,
+            'admin.getlivestreamvialink' => 1,
+            'admin.getmetrics' => 1,
+            'admin.getrestrictioninfo' => 1,
+            'application.getpublicinfo' => 1,
+            'auth.getapppublickey' => 1,
+            'auth.getsession' => 1,
+            'auth.getsignedpublicsessiondata' => 1,
+            'comments.get' => 1,
+            'connect.getunconnectedfriendscount' => 1,
+            'dashboard.getactivity' => 1,
+            'dashboard.getcount' => 1,
+            'dashboard.getglobalnews' => 1,
+            'dashboard.getnews' => 1,
+            'dashboard.multigetcount' => 1,
+            'dashboard.multigetnews' => 1,
+            'data.getcookies' => 1,
+            'events.get' => 1,
+            'events.getmembers' => 1,
+            'fbml.getcustomtags' => 1,
+            'feed.getappfriendstories' => 1,
+            'feed.getregisteredtemplatebundlebyid' => 1,
+            'feed.getregisteredtemplatebundles' => 1,
+            'fql.multiquery' => 1,
+            'fql.query' => 1,
+            'friends.arefriends' => 1,
+            'friends.get' => 1,
+            'friends.getappusers' => 1,
+            'friends.getlists' => 1,
+            'friends.getmutualfriends' => 1,
+            'gifts.get' => 1,
+            'groups.get' => 1,
+            'groups.getmembers' => 1,
+            'intl.gettranslations' => 1,
+            'links.get' => 1,
+            'notes.get' => 1,
+            'notifications.get' => 1,
+            'pages.getinfo' => 1,
+            'pages.isadmin' => 1,
+            'pages.isappadded' => 1,
+            'pages.isfan' => 1,
+            'permissions.checkavailableapiaccess' => 1,
+            'permissions.checkgrantedapiaccess' => 1,
+            'photos.get' => 1,
+            'photos.getalbums' => 1,
+            'photos.gettags' => 1,
+            'profile.getinfo' => 1,
+            'profile.getinfooptions' => 1,
+            'stream.get' => 1,
+            'stream.getcomments' => 1,
+            'stream.getfilters' => 1,
+            'users.getinfo' => 1,
+            'users.getloggedinuser' => 1,
+            'users.getstandardinfo' => 1,
+            'users.hasapppermission' => 1,
+            'users.isappuser' => 1,
+            'users.isverified' => 1,
+            'video.getuploadlimits' => 1);
+    $name = 'api';
+    if (isset($READ_ONLY_CALLS[strtolower($method)])) {
+      $name = 'api_read';
+    }
+    return self::getUrl($name, 'restserver.php');
+  }
+
+  /**
+   * Build the URL for given domain alias, path and parameters.
+   *
+   * @param $name String the name of the domain
+   * @param $path String optional path (without a leading slash)
+   * @param $params Array optional query parameters
+   * @return String the URL for the given parameters
+   */
+  protected function getUrl($name, $path='', $params=array()) {
+    $url = self::$DOMAIN_MAP[$name];
+    if ($path) {
+      if ($path[0] === '/') {
+        $path = substr($path, 1);
+      }
+      $url .= $path;
+    }
+    if ($params) {
+      $url .= '?' . http_build_query($params, null, '&');
+    }
+    return $url;
+  }
+
+  /**
+   * Returns the Current URL, stripping it of known FB parameters that should
+   * not persist.
+   *
+   * @return String the current URL
+   */
+  protected function getCurrentUrl() {
+    $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] == 'on'
+      ? 'https://'
+      : 'http://';
+    $currentUrl = $protocol . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'];
+    $parts = parse_url($currentUrl);
+
+    // drop known fb params
+    $query = '';
+    if (!empty($parts['query'])) {
+      $params = array();
+      parse_str($parts['query'], $params);
+      foreach(self::$DROP_QUERY_PARAMS as $key) {
+        unset($params[$key]);
+      }
+      if (!empty($params)) {
+        $query = '?' . http_build_query($params, null, '&');
+      }
+    }
+
+    // use port if non default
+    $port =
+      isset($parts['port']) &&
+      (($protocol === 'http://' && $parts['port'] !== 80) ||
+       ($protocol === 'https://' && $parts['port'] !== 443))
+      ? ':' . $parts['port'] : '';
+
+    // rebuild
+    return $protocol . $parts['host'] . $port . $parts['path'] . $query;
+  }
+
+  /**
+   * Generate a signature for the given params and secret.
+   *
+   * @param Array $params the parameters to sign
+   * @param String $secret the secret to sign with
+   * @return String the generated signature
+   */
+  protected static function generateSignature($params, $secret) {
+    // work with sorted data
+    ksort($params);
+
+    // generate the base string
+    $base_string = '';
+    foreach($params as $key => $value) {
+      $base_string .= $key . '=' . $value;
+    }
+    $base_string .= $secret;
+
+    return md5($base_string);
+  }
+
+  /**
+   * Prints to the error log if you aren't in command line mode.
+   *
+   * @param String log message
+   */
+  protected static function errorLog($msg) {
+    // disable error log if we are running in a CLI environment
+    // @codeCoverageIgnoreStart
+    if (php_sapi_name() != 'cli') {
+      error_log($msg);
+    }
+    // uncomment this if you want to see the errors on the page
+    // print 'error_log: '.$msg."\n";
+    // @codeCoverageIgnoreEnd
+  }
+
+  /**
+   * Base64 encoding that doesn't need to be urlencode()ed.
+   * Exactly the same as base64_encode except it uses
+   *   - instead of +
+   *   _ instead of /
+   *
+   * @param String base64UrlEncodeded string
+   */
+  protected static function base64UrlDecode($input) {
+    return base64_decode(strtr($input, '-_', '+/'));
+  }
+}
+
+endif; // if !class_exists('Facebook')
+// src/core.php
+
+ 
+/**
+ * coreylib - Core functionality.
+ * Copyright (C)2008-2010 Fat Panda LLC.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA. 
+ */
+ 
+/**
+ * Generic Exception wrapper
+ */
+class clException extends Exception {}
+ 
+/**
+ * Logger.
+ */
+class clLog {
+  
+  static function log($message) {
+    trigger_error($message, E_USER_NOTICE);
+  }
+  
+  static function warn() {
+    trigger_error($message, E_USER_WARN);
+  }
+  
+  static function error() {
+    trigger_error($message, E_USER_ERROR);
+  }
+  
+}
+ 
+/**
+ * The entry point for all parsing.
+ */
+class clApi {
+  
+  const METHOD_GET = 'get';
+  const METHOD_POST = 'post';
+  
+  function __construct($url) {
+    
+  }
+  
+  /**
+   * Download and parse the data from the specified endpoint using an HTTP GET.
+   * @param string $cache_for An expression of time
+   * @return bool TRUE if parsing succeeds; otherwise FALSE.
+   * @see http://php.net/manual/en/function.strtotime.php
+   */
+  function parse($cache_for) {
+    
+  }
+  
+  /**
+   * Download and parse the data from the specified endpoint using an HTTP POST.
+   * @param string $cache_for An expression of time
+   * @return bool TRUE if parsing succeeds; otherwise FALSE.
+   * @see http://php.net/manual/en/function.strtotime.php
+   */
+  function post($cache_for) {
+    
+  }
+  
+  /**
+   * Print the content of the parsed document.
+   */
+  function __toString() {
+    
+  }
+  
+  function info() {
+    
+  }
+  
+  /**
+   * Provide access to the wrapped SimpleXML object.
+   */
+  function __get($prop_name) {
+    
+  }
+  
+  /**
+   * Provide help to users of older versions.
+   */
+  function __call($fx_name, $args) {
+    
+    
+  }
+  
+}
+
+if (!function_exists('coreylib')):
+  function coreylib($url, $cache_for = null, $params = array(), $method = clApi::METHOD_GET) {
+    $api = new clApi($url);
+    
+  }
+endif;
+// src/node.php
+
+
+/**
+ * coreylib - Standard API for navigating data: XML and JSON
+ * Copyright (C)2008-2010 Fat Panda LLC.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,2066 +1950,287 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA. 
  */
 
-define('COREYLIB_PARSER_XML', 'xml');
-define('COREYLIB_PARSER_JSON', 'json');
-define('MASHUP_SORT_STRING', 'string');
-define('MASHUP_SORT_DATE', 'date');
-
-@include_once('coreylib-cfg.php');
-	
-/**
- * tmhOAuth
- *
- * An OAuth 1.0A library written in PHP.
- * The library supports file uploading using multipart/form as well as general
- * REST requests. OAuth authentication is sent using the an Authorization Header.
- *
- * @author themattharris
- * @version 0.1.1
- *
- * 17 September 2010
- */
-class tmhOAuth {
+abstract class clNode {
+  
+  const REGEX_ATTRIBUTE = '/^@(.*)?$/';
+  const REGEX_ARRAY_ATTRIBUTE = '/(.*)\[(\d+)\](@(.*))?$/';
+  const REGEX_ELEMENT_ATTRIBUTE = '/([^@]+)(@(.*))?$/';
+  
   /**
-   * Creates a new tmhOAuth object
-   *
-   * @param string $config, the configuration to use for this request
+   * Retrieve some data from this Node or its children.
+   * @param string $selector A query conforming to the coreylib selector syntax.
+   * @param int $limit A limit on the number of nodes to return, when searching for elements.
+   * @return mixed A scalar value or null when an attribute is requested; an instance of a subclass
+   * of clNode when only one element should be returned; in all other cases, an array of
+   * clNode-subclassed objects.
+   * @throws clException When an attribute requested does not exist.
    */
-  function __construct($config) {
-    $this->params = array();
-    $this->auto_fixed_time = false;
+  function get($selector, $limit = null) {
+    $selectors = explode('/', $selector);
+    $this_selector = array_shift($selectors);
+    
+    $sel = null;
+		$index = null;
+		$attribute = null;
 
-    // default configuration options
-    $this->config = array_merge(
-      array(
-        'consumer_key'    => '',
-        'consumer_secret' => '',
-        'user_token'      => '',
-        'user_secret'     => '',
-        'host'            => 'http://api.twitter.com',
-        'v'               => '1',
-        'debug'           => false,
-        'force_nonce'     => false,
-        'nonce'           => false, // used for checking signatures. leave as false for auto
-        'force_timestamp' => false,
-        'timestamp'       => false, // used for checking signatures. leave as false for auto
-        'oauth_version'   => '1.0'
-      ),
-      $config
-    );
-  }
+    // $sel is just an attribute, like "@foo"
+		if (preg_match(self::REGEX_ATTRIBUTE, $this_selector, $matches)) { 
+			$attribute = $matches[1];
+		
+		// $sel is an array spec and, optionally, includes an attribute
+		// like foo[1]
+		// like foo[1]@bar
+		} else if (preg_match(self::REGEX_ARRAY_ATTRIBUTE, $this_selector, $matches)) { 
+			$sel = $matches[1];	
+			$index = (int) $matches[2];	
+			$attribute = (isset($matches[4])) ? $matches[4] : null;
+			
+		// $sel is an element and, optionally, includes an attribute
+		// like foo
+		// like foo@bar
+		} else if (preg_match(self::REGEX_ELEMENT_ATTRIBUTE, $this_selector, $matches)) { 
+			$sel = $matches[1];	
+			$attribute = (isset($matches[3])) ? $matches[3] : null;
+		}
+		
+		// should we be looking for an element?
+	  if ($sel) {
+	    $children = $this->children($sel);
+	    
+      // validate $index
+	    if ($index && $index > count($children)-1) {
+	      throw new clException(sprintf("There are only %d elements named [%s] in [%s]: %d is out of range.", count($children), $sel, $selector, $index));
+	    
+	    // implement $index
+	    } else if ($index) {
+	      $child = $children[$index];
+	      
+	      if ($attribute) {
+	        return $child->attribute($attribute);
+	      } else {
+	        if (count($selectors)) {
+	          return $child->get(implode('/', $selectors));
+	        } else {
+	          return $child;
+	        }
+	      }
+	      
+	    // index is not defined
+	    } else {
+	      if ($limit) {
+	        return array_slice($children, 0, $limit);
+	      } else {
+	        return $children;
+	      }
+	    }
+	    
+	  // no element: just an attribute spec  
+	  } else if ($attribute) {
+	    return $this->attribute($attribute);
+	  }
+	}
+  
+  protected abstract function attribute($selector = '');
+  
+  protected abstract function children($selector = '');
+  
+  abstract function __toString();
+  
+}
 
+//class clJsonNode extends clNode {}
+
+class clXmlNode extends clNode {
+  
+  private $el;
+  public $parent;
+  private $ns;
+  public $namespaces;
+  
   /**
-   * Generates a random OAuth nonce.
-   * If 'force_nonce' is true a nonce is not generated and the value in the configuration will be retained.
-   *
-   * @param string $length how many characters the nonce should be before MD5 hashing. default 12
-   * @param string $include_time whether to include time at the beginning of the nonce. default true
-   * @return void
+   * Wrap a SimpleXMLElement object.
+   * @param SimpleXMLElement $simple_xml_el
+   * @param clXmlNode $parent (optional)
+   * @param array $namespaces (optional)
    */
-  private function create_nonce($length=12, $include_time=true) {
-    if ($this->config['force_nonce'] == false) {
-      $sequence = array_merge(range(0,9), range('A','Z'), range('a','z'));
-      $length = $length > count($sequence) ? count($sequence) : $length;
-      shuffle($sequence);
-      $this->config['nonce'] = md5(substr(microtime() . implode($sequence), 0, $length));
-    }
-  }
-
-  /**
-   * Generates a timestamp.
-   * If 'force_timestamp' is true a nonce is not generated and the value in the configuration will be retained.
-   *
-   * @return void
-   */
-  private function create_timestamp() {
-    $this->config['timestamp'] = ($this->config['force_timestamp'] == false ? time() : $this->config['timestamp']);
-  }
-
-  /**
-   * Encodes the string or array passed in a way compatible with OAuth.
-   * If an array is passed each array value will will be encoded.
-   *
-   * @param mixed $data the scalar or array to encode
-   * @return $data encoded in a way compatible with OAuth
-   */
-  private function safe_encode($data) {
-    if (is_array($data)) {
-      return array_map(array($this, 'safe_encode'), $data);
-    } else if (is_scalar($data)) {
-      return str_ireplace(
-        array('+', '%7E'),
-        array(' ', '~'),
-        rawurlencode($data)
-      );
-    } else {
-      return '';
-    }
-  }
-
-  /**
-   * Decodes the string or array from it's URL encoded form
-   * If an array is passed each array value will will be decoded.
-   *
-   * @param mixed $data the scalar or array to decode
-   * @return $data decoded from the URL encoded form
-   */
-  private function safe_decode($data) {
-    if (is_array($data)) {
-      return array_map(array($this, 'safe_decode'), $data);
-    } else if (is_scalar($data)) {
-      return rawurldecode($data);
-    } else {
-      return '';
-    }
-  }
-
-  /**
-   * Returns an array of the standard OAuth parameters.
-   *
-   * @return array all required OAuth parameters, safely encoded
-   */
-  private function get_defaults() {
-    $defaults = array(
-      'oauth_version'          => $this->config['oauth_version'],
-      'oauth_nonce'            => $this->config['nonce'],
-      'oauth_timestamp'        => $this->config['timestamp'],
-      'oauth_consumer_key'     => $this->config['consumer_key'],
-      'oauth_signature_method' => 'HMAC-SHA1',
-    );
-
-    // include the user token if it exists
-    if ( $this->config['user_token'] )
-      $defaults['oauth_token'] = $this->config['user_token'];
-
-    // safely encode
-    foreach ($defaults as $k => $v) {
-      $_defaults[$this->safe_encode($k)] = $this->safe_encode($v);
-    }
-
-    return $_defaults;
-  }
-
-  /**
-   * Extracts and decodes OAuth parameters from the passed string
-   *
-   * @param string $body the response body from an OAuth flow method
-   * @return array the response body safely decoded to an array of key => values
-   */
-  function extract_params($body) {
-    $kvs = explode('&', $body);
-    $decoded = array();
-    foreach ($kvs as $kv) {
-      $kv = explode('=', $kv, 2);
-      $kv[0] = $this->safe_decode($kv[0]);
-      $kv[1] = $this->safe_decode($kv[1]);
-      $decoded[$kv[0]] = $kv[1];
-    }
-    return $decoded;
-  }
-
-  /**
-   * Prepares the HTTP method for use in the base string by converting it to
-   * uppercase.
-   *
-   * @param string $method an HTTP method such as GET or POST
-   * @return void value is stored to a class variable
-   * @author Matt Harris
-   */
-  private function prepare_method($method) {
-    $this->method = strtoupper($method);
-  }
-
-  /**
-   * Prepares the URL for use in the base string by ripping it apart and
-   * reconstructing it.
-   *
-   * @param string $url the request URL
-   * @return void value is stored to a class variable
-   * @author Matt Harris
-   */
-  private function prepare_url($url) {
-    $parts = parse_url($url);
-
-    $port = @$parts['port'];
-    $scheme = $parts['scheme'];
-    $host = $parts['host'];
-    $path = @$parts['path'];
-
-    $port or $port = ($scheme == 'https') ? '443' : '80';
-
-    if (($scheme == 'https' && $port != '443')
-        || ($scheme == 'http' && $port != '80')) {
-      $host = "$host:$port";
-    }
-    $this->url = "$scheme://$host$path";
-  }
-
-  /**
-   * Prepares all parameters for the base string and request.
-   * Multipart parameters are ignored as they are not defined in the specification,
-   * all other types of parameter are encoded for compatibility with OAuth.
-   *
-   * @param array $params the parameters for the request
-   * @return void prepared values are stored in class variables
-   */
-  private function prepare_params($params) {
-    // do not encode multipart parameters, leave them alone
-    if ($this->config['multipart']) {
-      $this->request_params = $params;
-      $params = array();
-    }
-
-    // signing parameters are request parameters + OAuth default parameters
-    $this->signing_params = array_merge($this->get_defaults(), (array)$params);
-
-    // Remove oauth_signature if present
-    // Ref: Spec: 9.1.1 ("The oauth_signature parameter MUST be excluded.")
-    if (isset($this->signing_params['oauth_signature'])) {
-      unset($this->signing_params['oauth_signature']);
-    }
-
-    // Parameters are sorted by name, using lexicographical byte value ordering.
-    // Ref: Spec: 9.1.1 (1)
-    uksort($this->signing_params, 'strcmp');
-
-    // encode. Also sort the signed parameters from the POST parameters
-    foreach ($this->signing_params as $k => $v) {
-      $k = $this->safe_encode($k);
-      $v = $this->safe_encode($v);
-      $_signing_params[$k] = $v;
-      $kv[] = "{$k}={$v}";
-    }
-
-    // auth params = the default oauth params which are present in our collection of signing params
-    $this->auth_params = array_intersect_key($this->get_defaults(), $_signing_params);
-    if (isset($_signing_params['oauth_callback'])) {
-      $this->auth_params['oauth_callback'] = $_signing_params['oauth_callback'];
-      unset($_signing_params['oauth_callback']);
-    }
-
-    // request_params is already set if we're doing multipart, if not we need to set them now
-    if ( ! $this->config['multipart'])
-      $this->request_params = array_diff_key($_signing_params, $this->get_defaults());
-
-    // create the parameter part of the base string
-    $this->signing_params = implode('&', $kv);
-  }
-
-  /**
-   * Prepares the OAuth signing key
-   *
-   * @return void prepared signing key is stored in a class variables
-   */
-  private function prepare_signing_key() {
-    $this->signing_key = $this->safe_encode($this->config['consumer_secret']) . '&' . $this->safe_encode($this->config['user_secret']);
-  }
-
-  /**
-   * Prepare the base string.
-   * Ref: Spec: 9.1.3 ("Concatenate Request Elements")
-   *
-   * @return void prepared base string is stored in a class variables
-   */
-  private function prepare_base_string() {
-    $base = array(
-      $this->method,
-      $this->url,
-      $this->signing_params
-    );
-    $this->base_string = implode('&', $this->safe_encode($base));
-  }
-
-  /**
-   * Prepares the Authorization header
-   *
-   * @return void prepared authorization header is stored in a class variables
-   */
-  private function prepare_auth_header() {
-    $this->headers = array();
-    uksort($this->auth_params, 'strcmp');
-    foreach ($this->auth_params as $k => $v) {
-      $kv[] = "{$k}=\"{$v}\"";
-    }
-    $this->auth_header = 'Authorization: OAuth ' . implode(', ', $kv);
-    $this->headers[] = $this->auth_header;
-  }
-
-  /**
-   * Signs the request and adds the OAuth signature. This runs all the request
-   * parameter preparation methods.
-   *
-   * @param string $method the HTTP method being used. e.g. POST, GET, HEAD etc
-   * @param string $url the request URL without query string parameters
-   * @param array $params the request parameters as an array of key=value pairs
-   * @param string $useauth whether to use authentication when making the request.
-   */
-  private function sign($method, $url, $params, $useauth) {
-    $this->prepare_method($method);
-    $this->prepare_url($url);
-    $this->prepare_params($params);
-
-    // we don't sign anything is we're not using auth
-    if ($useauth) {
-      $this->prepare_base_string();
-      $this->prepare_signing_key();
-
-      $this->auth_params['oauth_signature'] = $this->safe_encode(
-        base64_encode(
-          hash_hmac(
-            'sha1', $this->base_string, $this->signing_key, true
-      )));
-
-      $this->prepare_auth_header();
-    }
-  }
-
-  /**
-   * Make an HTTP request using this library. This method doesn't return anything.
-   * Instead the response should be inspected directly.
-   *
-   * @param string $method the HTTP method being used. e.g. POST, GET, HEAD etc
-   * @param string $url the request URL without query string parameters
-   * @param array $params the request parameters as an array of key=value pairs
-   * @param string $useauth whether to use authentication when making the request. Default true.
-   * @param string $multipart whether this request contains multipart data. Default false
-   * @param boolean $return_curl_handle whether the curl handle should be returned instead of executed. Default false
-   */
-  function request($method, $url, $params=array(), $useauth=true, $multipart=false, $return_curl_handle=false) {
-    $this->config['multipart'] = $multipart;
-
-    $this->create_nonce();
-    $this->create_timestamp();
-
-    $this->sign($method, $url, $params, $useauth);
-    return $this->curlit($return_curl_handle);
-  }
-
-  /**
-   * Make an HTTP request using this library. This method is different to 'request'
-   * because on a 401 error it will retry the request.
-   *
-   * When a 401 error is returned it is possible the timestamp of the client is
-   * too different to that of the API server. In this situation it is recommended
-   * the request is retried with the OAuth timestamp set to the same as the API
-   * server. This method will automatically try that technique.
-   *
-   * This method doesn't return anything. Instead the response should be
-   * inspected directly.
-   *
-   * @param string $method the HTTP method being used. e.g. POST, GET, HEAD etc
-   * @param string $url the request URL without query string parameters
-   * @param array $params the request parameters as an array of key=value pairs
-   * @param string $useauth whether to use authentication when making the request. Default true.
-   * @param string $multipart whether this request contains multipart data. Default false
-   */
-  function auto_fix_time_request($method, $url, $params=array(), $useauth=true, $multipart=false) {
-    $this->request($method, $url, $params, $useauth, $multipart);
-
-    // if we're not doing auth the timestamp isn't important
-    if ( ! $useauth)
-      return;
-
-    // some error that isn't a 401
-    if ($this->response['code'] != 401)
-      return;
-
-    // some error that is a 401 but isn't because the OAuth token and signature are incorrect
-    // TODO: this check is horrid but helps avoid requesting twice when the username and password are wrong
-    if (stripos($this->response['response'], 'password') !== false)
-     return;
-
-    // force the timestamp to be the same as the Twitter servers, and re-request
-    $this->auto_fixed_time = true;
-    $this->config['force_timestamp'] = true;
-    $this->config['timestamp'] = strtotime($this->response['headers']['date']);
-    $this->request($method, $url, $params, $useauth, $multipart);
-  }
-
-  /**
-   * Utility function to create the request URL in the requested format
-   *
-   * @param string $request the API method without extension
-   * @param string $format the format of the response. Default json. Set to an empty string to exclude the format
-   * @return string the concatenation of the host, API version, API method and format
-   */
-  function url($request, $format='json') {
-    $format = strlen($format) > 0 ? ".$format" : '';
-    return implode('/', array_filter(array(
-      $this->config['host'],
-      $this->config['v'],
-      $request . $format
-    )));
-  }
-
-  /**
-   * Utility function to parse the returned curl headers and store them in the
-   * class array variable.
-   *
-   * @param object $ch curl handle
-   * @param string $header the response headers
-   * @return the string length of the header
-   */
-  private function curlHeader($ch, $header) {
-    $i = strpos($header, ':');
-    if ( ! empty($i) ) {
-      $key = str_replace('-', '_', strtolower(substr($header, 0, $i)));
-      $value = trim(substr($header, $i + 2));
-      $this->response['headers'][$key] = $value;
-    }
-    return strlen($header);
-  }
-
-  /**
-   * Makes a curl request. All should have been prepared by the request method
-   * @param $return_curl_handle boolean Defaults to false
-   * @return When $return_curl_handle is TRUE, returns the curl handle; otherwise void: response data is stored in the class variable 'response'
-   */
-  private function curlit($return_curl_handle=false) {
-    if (@$this->config['prevent_request'])
-      return;
-
-    // method handling
-    switch ($this->method) {
-      case 'GET':
-        // GET request so convert the parameters to a querystring
-        if ( ! empty($this->request_params)) {
-          foreach ($this->request_params as $k => $v) {
-            $params[] = $this->safe_encode($k) . '=' . $this->safe_encode($v);
-          }
-          $qs = implode('&', $params);
-          $this->url = strlen($qs) > 0 ? $this->url . '?' . $qs : $this->url;
-          $this->request_params = array();
-        }
-        break;
-    }
-
-    // configure curl
-    $c = curl_init();
-    curl_setopt($c, CURLOPT_USERAGENT, "themattharris' HTTP Client");
-    curl_setopt($c, CURLOPT_CONNECTTIMEOUT, 30);
-    curl_setopt($c, CURLOPT_TIMEOUT, 10);
-    curl_setopt($c, CURLOPT_RETURNTRANSFER, TRUE);
-    // for security you may want to set this to TRUE. If you do you need to install
-    // the servers certificate in your local certificate store.
-    curl_setopt($c, CURLOPT_SSL_VERIFYPEER, FALSE);
-    curl_setopt($c, CURLOPT_URL, $this->url);
-    // process the headers
-    curl_setopt($c, CURLOPT_HEADERFUNCTION, array($this, 'curlHeader'));
-    curl_setopt($c, CURLOPT_HEADER, FALSE);
-    curl_setopt($c, CURLINFO_HEADER_OUT, true);
-    switch ($this->method) {
-      case 'GET':
-        break;
-      case 'POST':
-        curl_setopt($c, CURLOPT_POST, TRUE);
-        break;
-      default:
-        curl_setopt($c, CURLOPT_CUSTOMREQUEST, $this->method);
-    }
-
-    if ( ! empty($this->request_params) ) {
-      // if not doing multipart we need to implode the parameters
-      if ( ! $this->config['multipart'] ) {
-        foreach ($this->request_params as $k => $v) {
-          $ps[] = "{$k}={$v}";
-        }
-        $this->request_params = implode('&', $ps);
+  function __construct(&$simple_xml_el, &$parent = null, $ns = '', $namespaces = null) {
+    $this->el = &$simple_xml_el;
+    $this->parent = &$parent;
+    $this->ns = $ns;
+    $this->namespaces = $namespaces;
+    
+    if (!$this->namespaces) {
+      if ($this->parent) {
+        $this->namespaces = &$this->parent->namespaces;
+      } else {
+        $this->namespaces = $this->el->getNamespaces(true);
+        $this->namespaces[''] = null;
       }
-      curl_setopt($c, CURLOPT_POSTFIELDS, $this->request_params);
+    }
+
+  }
+  
+  /**
+   * Expose the SimpleXMLElement API.
+   */
+  function __call($fx_name, $args) {
+    $result = call_user_func_array(array($this->el, $fx_name), $args);
+    if ($result instanceof SimpleXMLElement) {
+      return new clXmlNode($result, $this);
     } else {
-      // CURL will set length to -1 when there is no data, which breaks Twitter
-      $this->headers[] = 'Content-Type:';
-      $this->headers[] = 'Content-Length:';
+      return $result;
     }
-
-    // CURL defaults to setting this to Expect: 100-Continue which Twitter rejects
-    $this->headers[] = 'Expect:';
-
-    if ( ! empty($this->headers)) {
-      curl_setopt($c, CURLOPT_HTTPHEADER, $this->headers);
-    }
-
-	// return the curl handle?
-	if ($return_curl_handle) {
-		return $c;
-	}
-
-    // do it!
-    $response = curl_exec($c);
-    $code = curl_getinfo($c, CURLINFO_HTTP_CODE);
-    $info = curl_getinfo($c);
-    curl_close($c);
-
-    // store the response
-    $this->response['code'] = $code;
-    $this->response['response'] = $response;
-    $this->response['info'] = $info;
   }
-
+  
   /**
-   * Debug function for printing the content of an object
-   *
-   * @param mixes $obj
+   * Expose the SimpleXMLElement API.
    */
-  function pr($obj) {
-    echo '<pre style="word-wrap: break-word">';
-    if ( is_object($obj) )
-      print_r($obj);
-    elseif ( is_array($obj) )
-      print_r($obj);
-    else
-      echo $obj;
-    echo '</pre>';
+  function __get($name) {
+    $result = $this->el->{$name};
+    if ($result instanceof SimpleXMLElement) {
+      return new clXmlNode($result, $this);
+    } else {
+      return $result;
+    }
   }
-
+  
+  private $children;
+  
   /**
-   * Returns the current URL. This is instead of PHP_SELF which is unsafe
-   *
-   * @param bool $dropqs whether to drop the querystring or not. Default true
-   * @return string the current URL
+   * Retrieve children of this node named $selector. The benefit
+   * of this over SimpleXMLElement::children() is that this method
+   * is namespace agnostic, searching available children until
+   * matches are found.
+   * @param string $selector A name, e.g., "foo", or a namespace-prefixed name, e.g., "me:foo"
+   * @return array of clXmlNodes, when found; otherwise, empty array
    */
-  function php_self($dropqs=true) {
-    $url = sprintf('%s://%s%s',
-      $_SERVER['SERVER_PORT'] == 80 ? 'http' : 'https',
-      $_SERVER['SERVER_NAME'],
-      $_SERVER['REQUEST_URI']
-    );
-
-    $parts = parse_url($url);
-
-    $port = @$parts['port'];
-    $scheme = $parts['scheme'];
-    $host = $parts['host'];
-    $path = @$parts['path'];
-    $qs   = @$parts['query'];
-
-    $port or $port = ($scheme == 'https') ? '443' : '80';
-
-    if (($scheme == 'https' && $port != '443')
-        || ($scheme == 'http' && $port != '80')) {
-      $host = "$host:$port";
+  protected function children($selector = '') {
+    if (!$this->children) {
+      $this->children = array();
+      foreach($this->namespaces as $ns => $uri) {
+        $this->children[$ns] = $this->el->children($ns, true);
+      }
     }
-    $url = "$scheme://$host$path";
-    if ( ! $dropqs)
-      return "{$url}?{$qs}";
-    else
-      return $url;
+    
+    @list($ns, $name) = explode(':', $selector);
+    
+    if (!$name) {
+      $name = $ns;
+      $ns = null;
+    }
+    
+    $children = array();
+    
+    // no namespace and no name? get all.
+    if (!$ns && !$name) {
+      foreach($this->children as $ns => $child_sxe) {
+        foreach($child_sxe as $child) {
+          $children[] = new clXmlNode($child, new clXmlNode($child_sxe, $this, $ns), $ns);
+        }
+      }
+      return $children;
+      
+    // ns specified?
+    } else if ($ns && isset($this->children[$ns])) {
+      foreach($this->children[$ns] as $child) {
+        if ($child->getName() == $name) {
+          $children[] = new clXmlNode($child, $this, $ns);
+        }
+      }
+    
+    // looking for the name across all namespaces
+    } else {
+      foreach($this->children as $ns => $child_sxe) {
+        foreach($child_sxe as $child) {
+          if ($child->getName() == $name) {
+            $children[] = new clXmlNode($child, new clXmlNode($child_sxe, $this, $ns), $ns);
+          }
+        }
+      }
+    }
+    
+    return $children;
   }
-}
-
-	
-/**
- * Universal AWS ECS parser.
- * @since 1.0.8
- */
-class clAWSECS extends clAPI {
-	
-	private $aws_secret_key;
-	
-	private $aws_access_key_id;
-	
-	private $aws_service;
-	
-	private $aws_associate_tag;
-	
-	/**
-	 * @param String associate_tag The Amazon associate tag to associate with this request
-	 * @param String access_key_id Your public AWS access key
-	 * @param String secret_key Your private AWS secret key
-	 */
-	function __construct($associate_tag, $access_key_id, $secret_key, $service='AWSECommerceService') {
-		$this->aws_associate_tag = $associate_tag;
-		$this->aws_access_key_id = $access_key_id;
-		$this->aws_secret_key = $secret_key;
-		$this->aws_service = $service;
-		parent::__construct('http://ecs.amazonaws.com/onca/xml');
-	}
-	
-	function parse($cacheFor = 0) {
-		$this->signAWSECS();
-		return parent::parse($cacheFor);
-	}
-	
-	/**
-	 * Properly sign an AWS ECS request. Based on signature implementation by Blake Schwendiman.
-	 * @see http://www.thewhyandthehow.com/signing-aws-requests-in-php/
-	 */
-	private function signAWSECS() {
-		$url_parts = split('://', $this->url);
-		$host_and_path = split('/', $url_parts[1]);
-		$host = array_shift($host_and_path);
-		$path = '/'.join('/', $host_and_path);
-
-		// parameter defaults:
-		$params = array_merge(array(
-			'Operation' => 'ItemSearch',
-			'Service' => $this->aws_service,
-			'Version' => '2009-06-01',
-			'AWSAccessKeyId' => $this->aws_access_key_id,
-			'AssociateTag' => $this->aws_associate_tag
-		), $this->params);
-
-		if ($params['Operation'] == 'ItemSearch' && !isset($params['SearchIndex']))
-			$params['SearchIndex'] = 'Blended';
-
-		// next, override timestamp:
-		$params = array_merge($params, array(
-			'Timestamp' => gmdate('Y-m-d\TH:i:s\Z')
-		));
-
-		// do a case-insensitive, natural order sort on the array keys.
-		ksort($params);
-
-		// create the signable string
-		$temp = array();
-		foreach ($params as $k => $v) {
-			$temp[] = str_replace('%7E', '~', rawurlencode($k)) . '=' . str_replace('%7E', '~', rawurlencode($v));
-		}
-		$signable = join('&', $temp);
-
-		$stringToSign = strtoupper($this->method)."\n$host\n$path\n$signable";
-
-		$this->debug($stringToSign);
-		
-		// Hash the AWS secret key and generate a signature for the request.
-		$hex_str = hash_hmac('sha256', $stringToSign, $this->aws_secret_key);
-		$raw = '';
-		for ($i = 0; $i < strlen($hex_str); $i += 2) {
-			$raw .= chr(hexdec(substr($hex_str, $i, 2)));
-		}
-
-		$params['Signature'] = base64_encode($raw);
-
-		ksort($params);
-
-		$this->params = $params;
-	}
-	
-}
-	
-/**
- * Universal web service parser.
- * @package coreylib
- * @since 1.0.0
- */
-class clAPI {
-	
-	const METHOD_GET = 'get';
-	
-	const METHOD_POST = 'post';
-	
-	protected $params = array();
-	
-	protected $username;
-	
-	protected $password;
-	
-	protected $consumerKey;
-	protected $consumerSecret;
-	protected $accessToken;
-	protected $accessTokenSecret;
-	
-	protected $headers;
-	
-	protected $content;
-	
-	protected $parserType;
-	
-	protected $parsed;
-	
-	protected $url;
-	
-	protected $sxml;
-	
-	protected $tree;
-	
-	protected $method = self::METHOD_GET;
-	
-	protected $ch;
-	
-	protected $multi_mode = false;
-	
-	protected $cacheName;
-	
-	protected $cacheFor;
-	
-	protected $curlopts = array();
-	
-	/** @since 1.1.6 */
-	protected $error;
-	
-	/** @since 1.1.6 */
-	function get_error() {
-		return $this->error;
-	}
-	
-	public static $options = array(
-		"display_errors" => false,
-		"debug" => false,
-		"nocache" => false,
-		"max_download_tries" => 3,
-		"trace" => false
-	);
-	
-	function __construct($url, $parserType = COREYLIB_PARSER_XML) {
-		$this->header('Expect', '');
-		
-		if (clAPI::$options['debug'] || clAPI::$options['display_errors']) {
-			error_reporting(E_ALL);
-			ini_set('display_errors', true);
-		}
-		
-		if (!empty($url)) {
-			$this->url = $url;
-			
-			if (!$parserType) { // attempt autodetection
-				if (preg_match('/(xml|rss)$/', $url))
-					$parserType = COREYLIB_PARSER_XML;
-				else if (preg_match('/(json)$/', $url))
-					$parserType = COREYLIB_PARSER_JSON;
-				else
-					self::error("Please specify a parser type for $url - parameter two of the constructor should be one of COREYLIB_PARSER_XML or COREYLIB_PARSER_JSON.");
-			}
-			
-			$this->parserType = $parserType;
-		}
-		else
-			self::error("Um... you have to tell me what URL you want to parse.");
-	}
-	
-	function __toString() {
-		return ($this->content ? $this->content : '');
-	}
-	
-	static function configure($option_name_or_array, $value_or_null = null) {
-		if (is_array($option_name_or_array))
-			self::$options = array_merge(self::$options, $option_name_or_array);
-		else
-			self::$options[$option_name_or_array] = $value_or_null;
-	}
-	
-	static function error($msg) {
-		if (clAPI::$options['debug'] || clAPI::$options['display_errors']) {
-			?>
-				<div style="color: black; font-family:sans-serif; background-color:#fcc; padding:10px; margin:5px 0px 5px 0px;">
-					<?php echo $msg ?>
-				</div>
-			<?php
-		}
-		else {
-			
-		}
-	}
-	
-	static function warn($msg) {
-		if (clAPI::$options['debug']) {
-			?>
-				<div style="color: black; font-family:sans-serif; background-color:#fc3; padding:10px; margin:5px 0px 5px 0px;">
-					<?php echo $msg ?>
-				</div>
-			<?php
-		}
-		else {
-
-		}
-	}
-	
-	static function debug($msg) {
-		if (clAPI::$options['debug']) {
-			?>
-				<div style="color: black; font-family:sans-serif; background-color:#ffc; padding:10px; margin:5px 0px 5px 0px;">
-					<?php echo $msg ?>
-				</div>
-			<?php
-		}
-		else {
-
-		}
-	}
-	
-	static function trace($msg) {
-		if (clAPI::$options['trace']) {
-			?>
-				<div style="color: black; font-family:sans-serif; background-color:#ffc; padding:10px; margin:5px 0px 5px 0px;">
-					<?php echo $msg ?>
-				</div>
-			<?php
-		}
-		else {
-
-		}
-	}
-	
-	/**
-	 * @since 1.1.5
-	 */
-	function basicAuth($username, $password) {
-		$this->username = $username;
-		$this->password = $password;
-		return $this;
-	}
-	
-	/**
-	 * @since 1.1.5
-	 */
-	function oAuth($consumerKey, $consumerSecret, $accessToken, $accessTokenSecret) {
-		$this->consumerKey = $consumerKey;
-		$this->consumerSecret = $consumerSecret;
-		$this->accessToken = $accessToken;
-		$this->accessTokenSecret = $accessTokenSecret;
-		return $this;
-	}
-	
-	/**
-	 * @since 1.1.5
-	 */
-	function header($name, $value) {
-		$this->headers[$name] = $value;
-		return $this;
-	}
-	
-	private function queryString() {
-		$qs = array();
-		foreach($this->params as $name => $value)
-			$qs[] = $name."=".urlencode($value);
-		return join('&', $qs);	
-	}
-	
-	/**
-	 * @since 1.0.10
-	 */
-	public final function curlopt($constant, $value) {
-		$this->curlopts[$constant] = $value;
-		return $this;
-	}
-	
-	private function download($url) {
-		self::debug(($this->multi_mode ? 'Queueing' : 'Downloading')." <b>$this->url</b>");
-		
-		$qs = $this->queryString();
-		$url = ($this->method == self::METHOD_GET ? $this->url.($qs ? '?'.$qs : '') : $this->url);
-		
-		$this->ch = curl_init($url);
-		
-		curl_setopt($this->ch, CURLOPT_RETURNTRANSFER, true);
-		curl_setopt($this->ch, CURLOPT_USERAGENT, 'coreylib');
-	
-		// accept all SSL certificates:
-		curl_setopt($this->ch, CURLOPT_SSL_VERIFYPEER, false);
-		
-		if ($this->username && $this->password) {
-			curl_setopt($this->ch, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
-			curl_setopt($this->ch, CURLOPT_USERPWD, "$this->username:$this->password");
-		}
-		
-		if ($this->consumerKey && $this->consumerSecret && $this->accessToken && $this->accessTokenSecret) {
-			
-			$oauth = new oAuthSupport(
-				$this->url,
-				$this->consumerKey, 
-				$this->consumerSecret, 
-				$this->accessToken, 
-				$this->accessTokenSecret,
-				$this->params,
-				strtoupper($this->method)
-			);
-			
-			$this->header('Authorization', $oauth->getHeader());
-		}
-		
-		// set headers
-		$headers = array();
-		foreach($this->headers as $name => $value) {
-			$headers[] = "{$name}: {$value}";
-		}
-		
-		curl_setopt($this->ch, CURLOPT_HTTPHEADER, $headers);
-		
-		if ($this->method == self::METHOD_POST) {
-			curl_setopt($this->ch, CURLOPT_POST, true);
-			curl_setopt($this->ch, CURLOPT_POSTFIELDS, $this->params);
-		}
-		else
-			curl_setopt($this->ch, CURLOPT_HTTPGET, true);
-			
-		foreach($this->curlopts as $const => $value) {
-			if ($const == CURLOPT_RETURNTRANSFER && $value != true) {
-				throw new Exception("Can't set CURL option CURLOPT_RETURNTRANSFER to false; that would break coreylib!");
-			}
-			curl_setopt($this->ch, $const, $value);
-		}
-		
-		// in multi mode, we return the curl handle reference; otherwise, we execute and return content
-		return ($this->multi_mode ? $this->ch : curl_exec($this->ch));
-	}
-	
-	/**
-	 * @since 1.0.6
-	 */
-	function post($cacheFor = 0) {
-		$this->method = self::METHOD_POST;
-		return $this->parse($cacheFor);
-	}
-	
-	function parse($cacheFor = 0) {
-		$this->content = false;
-		$this->cacheFor = $cacheFor;
-		
-		$qs = $this->queryString();
-		$url = $this->url.($qs ? '?'.$qs : '');
-		$this->cacheName = $url.md5($this->username.$this->password).md5($this->consumerKey.$this->accessToken);
-		
-		$contentCameFromCache = false;
-		
-		if ($this->cacheFor && !clAPI::$options['nocache']) 
-			$this->content = clCache::cached($this->cacheName, $this->cacheFor, true);
-			
-		if ($this->content === false) {
-			if (!$this->multi_mode) {
-				$try = 0;
-				do {
-					$try++;
-					$this->content = $this->download($url);
-				} while (empty($this->content) && $try < clAPI::$options['max_download_tries']);
-			}
-			else {
-				// in multi mode, the curl handle is returned from download, not content
-				return $this->download($url);
-			}
-		}
-		else {
-			// in multi mode, when content is cached, we return it
-			if ($this->multi_mode)
-				return $this->content;
-			else
-				$contentCameFromCache = true;
-		}
-
-		return $this->parseText($this->content, $contentCameFromCache);
-	}
-	
-	/**
-	 * @since 1.0.9
-	 */
-	function parseText($content, $contentCameFromCache = false) {
-		$this->content = $content;
-		
-		if (!$this->content) {
-			if ($this->ch) {
-				$message = curl_error($this->ch);
-				$this->error = "Failed to download $this->url<br /><small>$message</small>";
-				self::error($this->error); 
-				return false;
-			}
-			else {
-				$this->error = "Content queued from $this->url was null or empty.";
-				self::error($this->error);
-				return false;
-			}
-		}
-		
-		if ($this->parserType == COREYLIB_PARSER_XML) {
-			if (!($this->sxml = simplexml_load_string($this->content, 'SimpleXMLElement', LIBXML_NOCDATA))) {
-				self::error("Failed to parse content.");
-				return false;
-			}
-			
-			//$this->sxml['xmlns'] = '';
-			
-			$default_ns = null;
-			if (count(array_keys($namespaces = $this->sxml->getNamespaces(true)))) {
-				// capture the default namespace
-				$default_ns = isset($namespaces['']) ? $namespaces[''] : null;
-			}
-			
-			if ($default_ns) {
-				$this->tree = new clNode($this->sxml, $namespaces, $this->sxml->getName(), $default_ns);
-			}
-			else {
-				$this->tree = new clNode($this->sxml);
-			}
-		}
-		
-		if ($this->cacheFor && !$contentCameFromCache && !clAPI::$options['nocache'])
-			clCache::saveContent($this->cacheName, $this->content, $this->cacheFor);
-		
-		return true;
-	}
-	
-	/**
-	 * @since 1.0.9
-	 */
-	function method($method) {
-		if ($method != clAPI::METHOD_POST && $method != clAPI::METHOD_GET)
-			throw new Exception("Unrecognized HTTP method: $method. Must be one clAPI::METHOD_POST and clAPI::METHOD_GET.");
-		return $this;
-	}
-	
-	/**
-	 * Sometimes there will be multi uses of coreylib in a single request.  In these cases
-	 * it may be helpful to use multi_curl to execute all HTTP requests in parallel. Calling
-	 * this method returns one of two values: the content, when content was in the cache, or
-	 * a curl handle reference in all other cases.
-	 * @return false or a curl handle - see description.
-	 * @since 1.0.9
-	 */
-	function queue($cacheFor = 0) {
-		$this->multi_mode = true;
-		return $this->parse($cacheFor);
-	}
-	
-	/**
-	 * @since 1.0.9
-	 */
-	function get_ch() {
-		return $this->ch;
-	}
-	
-	/**
-	 * @deprecated Use clAPI->flushCache instead.
-	 */
-	function flush() {
-		$this->flushCache();
-	}
-	
-	/**
-	 * @since 1.0.9
-	 */
-	function flushCache() {
-		$qs = $this->queryString();
-		$url = $this->url.($qs ? '?'.$qs : '');
-		$cacheName = $url.md5($this->username.$this->password);
-		clCache::flush($cacheName);
-	}
-	
-	function get($path = null, $limit = null, $forgive = false) {
-		if ($this->tree === null)
-			self::error("Can't extract <b>$path</b> until you parse.");
-		else
-			return $this->tree->get($path, $limit, $forgive);
-	}
-	
-	/**
-	 * @since 1.1.6
-	 */
-	function text($path = null, $limit = null) {
-		if ($this->tree === null)
-			self::error("Can't extract <b>$path</b> until you parse.");
-		else
-			return $this->tree->text($path, $limit);
-	}
-	
-	/**
-	 * @since 1.1.0
-	 */
-	function xpath($xpath, $limit = null) {
-		if ($this->tree === null)
-			self::error("Can't extra <b>$path</b> until you parse.");
-		else
-			return $this->tree->xpath($xpath, $limit);
-	}
-	
-	function first($xpath) {
-		return $this->xpath($xpath, 1);
-	}
-	
-	function info($path = null, $limit = null) {
-		if ($this->tree === null)
-			self::error("Can't get info until you parse.");
-		else {
-			return $this->tree->info($path, $limit, $this->url);
-		}
-	}
-	
-	function has($path = null, $atLeast = 1) {
-		if ($this->tree === null)
-			self::error("Can't look for <b>$path</b> until you parse.");
-		else
-			return $this->tree->has($path, $atLeast);	
-	}
-	
-	function param($name_or_array, $value = null) {
-		if (is_array($name_or_array))
-			$this->params = $name_or_array;
-		else
-			$this->params[$name_or_array] = $value;
-
-		return $this;
-	}
-	
-	function clearParams() {
-		$this->params = array();	
-	}
-}
-
-/**
- * An intelligent wrapper for SimpleXMLElement objects: forget about namespaces, focus on data.
- * @package coreylib
- * @since 1.0.0
- */ 
-class clNode implements Iterator {
-	
-	private static $jqueryOut = false;
-	
-	public $__name;
-	public $__value;
-	public $__children = array();
-	public $__attributes = array();
-	public $__default_ns = null;
-	public $__default_prefix = null;
-	
-	private $__position;
-	
-    function __construct(SimpleXMLElement $node = null, $namespaces = null, $default_prefix = null, $default_ns = null) {
-    	if ($node !== null) {
-		
-			$this->__position = 0;
-			$this->__name = $node->getName();
-			$this->__value = $node;
-			$this->__default_ns = $default_ns;
-			$this->__default_prefix = $default_prefix;
-			
-			if ($namespaces === null)
-				$namespaces = $node->getNamespaces(true);
-			
-			if ($namespaces === null)
-				$namespaces = array();
-	
-			if (count($namespaces)) {
-				foreach($namespaces as $ns => $uri) {
-					clAPI::trace("Namespace $ns => $uri");
-				
-					foreach($node->children(($ns && $uri ? $uri : null)) as $child) {
-						$childName = ($ns ? "$ns:".$child->getName() : $child->getName());
-				
-						clAPI::trace("Child $childName");
-					
-						if (array_key_exists($childName, $this->__children) && is_array($this->__children[$childName])) {
-							$this->__children[$childName][] = new clNode($child, $namespaces, $default_prefix, $default_ns);
-						}
-						else if (array_key_exists($childName, $this->__children) && get_class($this->__children[$childName]) == "clNode") {
-							$childArray = array();
-							$childArray[] = $this->__children[$childName];
-							$childArray[] = new clNode($child, $namespaces);
-							$this->__children[$childName] = $childArray;
-						}
-						else
-							$this->__children[$childName] = new clNode($child, $namespaces, $default_prefix, $default_ns);
-					}
-				
-					foreach($node->attributes(($ns ? $ns : null)) as $a) {
-						$a = $a->asXML();
-						@list($name, $value) = split('=', $a);
-						$this->__attributes[trim($name)] = substr($value, 1, strlen($value)-2);
-					}
-				}
-			}
-			else {
-				foreach($node->children() as $child) {
-					$childName = $child->getName();
-			
-					clAPI::trace("Child $childName");
-				
-					if (array_key_exists($childName, $this->__children) && is_array($this->__children[$childName])) {
-						$this->__children[$childName][] = new clNode($child, $namespaces, $default_prefix, $default_ns);
-					}
-					else if (array_key_exists($childName, $this->__children) && get_class($this->__children[$childName]) == "clNode") {
-						$childArray = array();
-						$childArray[] = $this->__children[$childName];
-						$childArray[] = new clNode($child, $namespaces);
-						$this->__children[$childName] = $childArray;
-					}
-					else
-						$this->__children[$childName] = new clNode($child, $namespaces, $default_prefix, $default_ns);
-				}
-			
-				foreach($node->attributes() as $a) {
-					$a = $a->asXML();
-					@list($name, $value) = split('=', $a);
-					$this->__attributes[trim($name)] = substr($value, 1, strlen($value)-2);
-				}
-			}
-    	}
-	}
-	
-	function has($path = null, $atLeast = 1) {
-		$node = $this->get($path, null, true);
-		if (is_array($node)) 
-			return (count($node) >= $atLeast);
-		else if (is_object($node) && $node->__value != null)
-			return (1 >= $atLeast);
-		else if (strlen($node) > 0)
-			return (1 >= $atLeast);
-		else
-			return (0 >= $atLeast);	
-	}
-
-	/**
-	 * @since 1.1.0
-	 */
-	function xpath($xpath, $limit = null) {
-		if ($this->__default_ns && $this->__default_prefix) {
-			$this->__value->registerXPathNamespace($this->__default_prefix, $this->__default_ns);
-		}
-		
-		if (($elements = $this->__value->xpath($xpath)) !== false) {
-			if ($limit == 1 && count($elements) > 0)
-				return new clNode($elements[0]);
-			
-			$nodes = array();
-			foreach($elements as $i => $el) {
-				if ($limit != null && $i == $limit)
-					break;
-				$nodes[] = new clNode($el, null, $this->__default_prefix, $this->__default_ns);
-			}
-			return $nodes;
-		}
-		else {
-			return new clNode();
-		}
-	}
-	
-	/**
-	 * @since 1.1.0
-	 */
-	function first($xpath) {
-		return $this->xpath($xpath, 1);
-	}
-	
-	function get($path = null, $limit = null, $forgive = false) {
-		if ($path)
-			clAPI::trace("Searching for <b>&quot;$path&quot;</b>");	
-		
-		if ($path === null)
-			return $this;
-			
-		$node = $this;
-		
-		foreach(split('\/', $path) as $childName) {
-			$index = $attribute = null;
-			
-			if (preg_match('/^@(.*)?$/', $childName, $matches)) { // attribute only
-				$childName = null;
-				$attribute = $matches[1];
-				clAPI::trace("Searching for attribute named <b>$attribute</b>");
-			}
-			else if (preg_match('/(.*)\[(\d+)\](@(.*))?$/', $childName, $matches)) { // array request with/out attribute
-				$childName = $matches[1];	
-				$index = (int) $matches[2];	
-				$attribute = (isset($matches[4])) ? $matches[4] : null;
-				clAPI::trace("Searching for element <b>$childName".'['."$index]</b>".($attribute ? ", attribute <b>$attribute</b>" : ''));
-			}
-			else if (preg_match('/([^@]+)(@(.*))?$/', $childName, $matches)) { // element request with/out attribute
-				$childName = $matches[1];	
-				$attribute = (isset($matches[3])) ? $matches[3] : null;
-				clAPI::trace("Searching for element <b>$childName</b>".($attribute ? ", attribute <b>$attribute</b>" : ''));
-			}
-			
-			if (!$childName && $attribute) {
-				if (!isset($node->__attributes[$attribute])) {
-					if (!$forgive) clAPI::warn("<b>$node->__name</b> does not have an attribute named <b>$attribute</b>");
-					return null;
-				}
-				
-				return (isset($node->__attributes[$attribute]) ? $node->__attributes[$attribute] : null);		
-			}
-			
-			if ($childName && is_array($node)) {
-				if (!$forgive) clAPI::error("You are looking for <b>$childName</b> in an array of elements, which isn't possible");
-				return new clNode();	
-			}
-			
-			else if (!isset($node->__children[$childName])) {
-				if (!$forgive) clAPI::error("$childName is not a child of $node->__name");
-				return new clNode();
-			}
-			
-			else {
-				$node = $node->__children[$childName];
-				
-				if ($index !== null) {
-					if ($index === 0 && !is_array($node) && is_object($node)) {
-						$node = $node; // weird, eh?
-					}
-					else if (is_array($index) && $index > count($node)-1) {
-						if (!$forgive) clAPI::warn("$node->__name did not have an element at index $index");
-						return new clNode();	
-					}
-					else if (!is_array($node)) {
-						if (!$forgive) clAPI::error("$node->__name is not an array of elements");
-						return new clNode();
-					}
-					else
-						$node = $node[$index];
-				}
-				
-				if ($attribute !== null) {
-					
-					if (!count($node->__attributes)) {
-						if (!$forgive) clAPI::warn("$childName does not have any attributes");
-						return null;
-					}
-					
-					if (!isset($node->__attributes[$attribute])) {
-						if (!$forgive) clAPI::warn("$node->__name does not have an attribute named $attribute");
-						return null;
-					}
-					
-					return isset($node->__attributes[$attribute]) ? $node->__attributes[$attribute] : null;	
-				}
-			}
-		}
-		
-		if (is_array($node) && is_numeric($limit))
-			return array_slice($node, 0, $limit);
-		else
-			return $node;
-	}
-	
-	
-	function text($path = null, $limit = null) {
-		$node = $this->get($path, $limit);
-		if (is_array($node))
-			return '['.join(', ', $node).']';
-		else
-			return $node;
-	}
-	
-	function info($path = null, $limit = null, $source = null) {
-		if (!self::$jqueryOut) {
-			?>	
-				<script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.2.6/jquery.min.js"></script>
-				<script type="text/javascript">
-					jQuery.noConflict();
-					function coreylib_toggle(a) {
-						a = jQuery(a);
-						a.parent().children('blockquote').toggle();
-						if (a.hasClass('open')) {
-							a.children('span:first').text('+'); 
-							a.removeClass('open');
-						}
-						else {
-							a.children('span:first').text('-');
-							a.addClass('open');
-						}
-					}
-				</script>
-				<style>
-					.coreylib blockquote {
-						background-color:#fff; color:black; border:1px solid black; padding: 10px; margin: 0px 0px 10px 0px;
-					}
-					.coreylib blockquote a {
-						font-weight:bold; text-decoration:none;
-					}
-					.coreylib blockquote blockquote {
-						padding: 0;
-						border: none;
-					}
-					.coreylib blockquote blockquote.hide {
-						display:none; margin: 0px 0px 0px 15px
-					}
-					.coreylib blockquote blockquote.show {
-						color:black; background-color:#fff; border: 1px solid black; padding:10px; margin:0px 0px 10px 0px;
-					}
-					.coreylib blockquote blockquote a {
-						width:20px;
-					}
-					.coreylib .att {
-						font-weight:bold; color:purple;
-					}
-				</style>
-			<?php
-			
-			self::$jqueryOut = true;
-		}
-		
-		if ($source) echo '<div class="coreylib"><blockquote><a href="javascript:;" onclick="coreylib_toggle(this);">[<span>+</span>]</a> '.$source;
-		
-		$node = $this->get($path, $limit);
-		if (is_array($node)) {
-			foreach($node as $n)
-				self::blockquote($n->__name, $n);
-		}
-		else if (is_object($node))
-			self::blockquote($node->__name, $node, ($source));
-		else if ($node !== null)
-			echo "$path: $node";
-			
-		if ($source) echo '</blockquote></div>';
-		
-		return '';
-	}
-	
-	private static function blockquote($name, $node, $hide = true) {
-		if (is_object($node)) {
-			$attributes = array();
-			foreach($node->__attributes as $n => $v) 
-				$attributes[] = "<span class=\"att\">$n</span>=&quot;".htmlentities($v)."&quot;";
-			
-			echo '<blockquote class="'.($hide ? 'hide' : 'show').'">&lt;'.(count($node->__children) ? '<a href="javascript:;" onclick="coreylib_toggle(this);">'.$name.'</a>' : '<b>'.$name.'</b>').(count($attributes) ? ' '.join(' ', $attributes) : '').'&gt;';
-			echo htmlentities(trim($node->__value[0]));
-			foreach($node->__children as $childName => $child)
-				self::blockquote($childName, $child);
-			echo '&lt;/<b>'.$name.'&gt;</b></blockquote>';
-		}
-		else if (is_array($node)) {
-			foreach($node as $instance)
-				self::blockquote($name, $instance);	
-		}
-	}	
-		
-	function __get($name) {
-		$sxml = $this->__value;
-		return $sxml->$name;
-	}
-	
-	function __toString() {
-		ob_start();
-		echo $this->__value;
-		$content = ob_get_clean();
-		return ($content !== null ? $content : '');
-	}
-	
-	function renderTwitterLink($anchorText = '&raquo;') {
-		$text = $this->get('text');
-		$text = preg_replace('#http://[^ ]+#i', '<a href="\\0">\\0</a>', $text); 
-		$text = preg_replace('/@([a-z0-9_]+)/i', '<a href="http://twitter.com/\\1">\\0</a>', $text);
-		return $text.'&nbsp;<a class="gotostatus" href="http://twitter.com/'.$this->get('user/screen_name').'/statuses/'.$this->get('id').'">'.$anchorText.'</a>';
-	}
-	
-	function rewind() {
-        $this->__position = 0;
+  
+  private $attributes;
+  
+  /**
+   * Retrieve attributes of this node named $selector. The benefit
+   * of this over SimpleXMLElement::attributes() is that this method
+   * is namespace agnostic, searching available attributes until
+   * matches are found.
+   * @param string $selector A name, e.g., "foo", or a namespace-prefixed name, e.g., "me:foo"
+   * @return mixed a scalar value when $selector is defined; otherwise, an array of all attributes and values
+   * @throws clException When $selector is defined and attribute is not found
+   */
+  protected function attribute($selector = '') {
+    if (!$this->attributes) {
+      $this->attributes = array();
+      foreach($this->namespaces as $ns => $uri) {
+        $this->attributes[$ns] = $this->el->attributes($ns, true);
+      }
     }
-
-    function current() {
-        if ($this->__position == 0)
-    		return $this;
+    
+    @list($ns, $name) = explode(':', $selector);
+    
+    if (!$name) {
+      $name = $ns;
+      $ns = null;
     }
-
-    function key() {
-        return 0;
+    
+    // no namespace and no name? get all.
+    if (!$ns && !$name) {
+      $attributes = array();
+      foreach($this->attributes as $ns => $atts) {
+        foreach($atts as $this_name => $val) {
+          if ($ns) {
+            $this_name = "$ns:$this_name";
+          }
+          $attributes[$this_name] = $val;
+        }
+      }
+      return $attributes;
+      
+    // ns specified? 
+    } else if ($ns && isset($this->attributes[$ns])) {
+      foreach($this->attributes[$ns] as $this_name => $val) {
+        if ($this_name == $name) {
+          return $val;
+        }
+      }
+     
+      throw new clException(sprintf("[%s:%s] attribute not found in [%s]", $ns, $name, $this->getName()));
+    
+    // looking for the name across all namespaces
+    } else {
+      foreach($this->attributes as $ns => $atts) {
+        foreach($atts as $this_name => $val) {
+          if ($this_name == $name) {
+            return $val;
+          }
+        }
+      }
+      
+      throw new clException(sprintf("[%s] attribute not found in [%s]", $name, $this->getName()));
     }
-
-    function next() {
-        ++$this->__position;
-    }
-
-    function valid() {
-        return ($this->__position == 0 && $this->__value);
-    }
-	
-
-}
-
-/**
- * Cache whatever, dude.
- * @package coreylib
- * @version 1.0.0
- */
-class clCache {
-	
-	private static $currentNameQueue = array();
-	
-	private static $mysqlTableExists = null;
-	
-	private static $mysqlConnection;
-	
-	private static $inMem = array();
-	
-	public static $options = array(
-		'nocreate' => false,
-		'mysql_host' => '',
-		'mysql_database' => '',
-		'mysql_username' => '',
-		'mysql_password' => '',
-		'mysql_table_prefix' => 'coreylib_'
-	);
-	
-
-	static function configure($option_name_or_array, $value_or_null = null) {
-		if (is_array($option_name_or_array))
-			self::$options = array_merge(self::$options, $option_name_or_array);
-		else
-			self::$options[$option_name_or_array] = $value_or_null;
-	}
-	
-	/**
-     * Prepare the local filesystem for caching our stuff.
-	 * @param $name The unique identifier from which to generate a unique cache file
-	 * @returns mixed When initialization fails, returns false; otherwise, returns an array with three parameters: the new file name, the path to the cache folder, and the path to the cache file.
-	 */ 
-	private static function initFileSystem($name) {
-		$fileName = md5($name);
-		$cachePath = realpath(dirname(__FILE__)).DIRECTORY_SEPARATOR.'.coreycache';
-		
-		if (!file_exists($cachePath)) {
-			if (@mkdir($cachePath) === false) {
-				clAPI::error("Failed to create cache folder $cachePath");
-				return false;
-			}		
-		}
-		
-		$pathToFile = $cachePath.DIRECTORY_SEPARATOR.$fileName;
-		
-		return array($fileName, $cachePath, $pathToFile);
-	}
-	
-	/**
-     * Retrieves the value of the first column of the first row in the query result.
-	 * @return When now rows are returned by the query, null; otherwise, returns the first value.
-	 */
-	private static function getVar($query) {
-		if ($result = @mysql_query($query, self::$mysqlConnection)) {
-			$arr = mysql_fetch_array($result);
-			return $arr[0];
-		}
-		else
-			return null;
-	}
-	
-	/**
-     * @return The coreylib cache table name, with the proper prefix appended.
-	 */
- 	private static function cacheTableName() {
- 		return (isset(self::$options['mysql_table_prefix']) ? self::$options['mysql_table_prefix'] : '')."cache";
- 	}
-	
- 	/**
-   	 * Initialize MySQL caching: connect to the database and create the cache table if needed.
-     * @return When initialization succeeds, true; otherwise, false.
-	 */
-	private static function initMySql() {
-		if (self::$mysqlTableExists === null) {
-			clAPI::trace('Initializing MySQL cache.');
-			
-			if (!(self::$mysqlConnection = mysql_connect(self::$options['mysql_host'], self::$options['mysql_username'], self::$options['mysql_password']))) {
-				clAPI::error('Failed to connect to the MySQL server.');	
-				return false;
-			}
-			
-			if (!@mysql_select_db(self::$options['mysql_database'], self::$mysqlConnection)) {
-				clAPI::error('Unable to select database `'.self::$options['mysql_database'].'`');
-				return false;
-			}
-				
-			if (!self::$options['nocreate']) {
-				self::$mysqlTableExists = self::cacheTableName() == self::getVar("SHOW TABLES LIKE '".self::cacheTableName()."'");
-				
-				if (!self::$mysqlTableExists) {
-					clAPI::trace('Creating cache table <b>'.self::cacheTableName().'</b>');
-					
-					if (!@mysql_query('CREATE TABLE `'.self::cacheTableName().'` (`id` VARCHAR(32) NOT NULL PRIMARY KEY, `cached_on` DATETIME NOT NULL, `content` LONGBLOB)', self::$mysqlConnection)) {
-						clAPI::error('Failed to create cache table `'.self::cacheTableName().'`: '.mysql_error(self::$mysqlConnection));
-						return false;	
-					}
-					else
-						self::$mysqlTableExists = true;
-				}
-				else
-					return true;
-			}
-			else {
-				self::$mysqlTableExists = true;
-				clAPI::warn("You didn't let coreylib check to see if the cache table was there.  Hope you're right.");	
-				return true;
-			}
-		}
-		else
-			return self::$mysqlTableExists;
-	}
-	
-	/**
-     * Parses $cacheFor into a timestamp, representing a date in the past.
-	 * @param $cache A value that strtotime() understand
-	 * @return a Unix timestamp, or false when unable to parse $cacheFor
-	 */
-	private static function parseCacheFor($cacheFor) {
-		if (!is_numeric($cacheFor)) {
-			$original = trim($cacheFor);
-	
-			$firstChar = substr($cacheFor, 0, 1);
-			if ($firstChar == "+") {
-				$cacheFor = '-'.substr($cacheFor, 1);
-			}
-			else if ($firstChar != "-") {
-				if (stripos($cacheFor, 'last') === false)
-					$cacheFor = '-'.$cacheFor;
-			}
-			
-			if (($cacheFor = strtotime(gmdate('c', strtotime($cacheFor)))) === false) {
-				clAPI::error("I don't understand $original as an expression of time.");
-				return false;
-			}
-						
-			return $cacheFor;
-		}
-		else {
-			$cacheFor = strtotime(gmdate())-$cacheFor;
-			return $cacheFor;
-		}
-	}	
-	
-	private static function getFileCacheUnlessIsOldOrDoesNotExist($name, $cacheFor) {
-		if (!$cacheFor)
-			return false;
-			
-		if (!($cacheFor = self::parseCacheFor($cacheFor)))
-			return false;
-			
-		$init = self::initFileSystem($name);
-		if ($init == false)
-			return false;
-		else
-			list($fileName, $cachePath, $pathToFile) = $init;
-			
-		if (isset(self::$inMem[$fileName])) {
-			clAPI::debug("File cache <b>$fileName</b> found in memory! Now that's fast.");
-			return self::$inMem[$fileName];
-		}
-			
-		if (!file_exists($pathToFile)) { // file does not exist
-			clAPI::debug("File cache <b>$fileName</b> does not exist.");
-			return false;
-		}
-
-		if (($fileAge = @filemtime($pathToFile)) === false) { // couldn't read the file last-modified time: have no idea how old the file is!
-			clAPI::error("Unable to read file modification time of $pathToFile");
-			return false;
-		}
-			
-		$content = ($cacheFor < strtotime(gmdate('c', $fileAge))) ? @file_get_contents($pathToFile) : false;
-		if ($content === false)
-			clAPI::debug("File cache <b>$fileName</b> was too old.");
-		else
-			self::$inMem[$fileName] = $content;
-		
-		return $content;
-	}
-	
-	private static function getMysqlCacheUnlessIsOldOrDoesNotExist($name, $cacheFor) {
-		if (!$cacheFor)
-			return false;
-
-		$md5 = md5($name);
-			
-		if (isset(self::$inMem[$md5])) {
-			clAPI::debug("MySQL cache <b>$md5</b> found in memory! Now that's fast.");
-			return self::$inMem[$md5];
-		}
-			
-		if (self::initMySql()) {
-			$cacheFor = date('Y/m/d H:i:s', self::parseCacheFor($cacheFor));
-
-			clAPI::debug("Querying MySQL for cached content named <b>$md5</b> cached no earlier than <b>$cacheFor</b>."); 
-
-			$content = self::getVar("SELECT content FROM `".self::cacheTableName()."` WHERE id='$md5' AND '$cacheFor' < cached_on");
-
-			if ($error = mysql_error(self::$mysqlConnection)) {
-				clAPI::error('Failed to query the database for cached content. See error log for details');
-				error_log('Failed to query the database for cached content: '.$error);
-				return false;	
-			}
-			else if ($content === null) {
-				clAPI::debug("No MySQL cached content found for <b>$md5</b>");
-				return false;	
-			}
-			else {
-				clAPI::debug("MySQL cached content found for <b>$md5</b>. Yippie!");
-				self::$inMem[$md5] = $content;
-				return $content;
-			}
-		}
-		else
-			return false;
-	}
-	
-	private static function getCacheUnlessIsOldOrDoesNotExist($name, $cacheFor) {
-		return (self::isMysqlMode() ? self::getMysqlCacheUnlessIsOldOrDoesNotExist($name, $cacheFor) : self::getFileCacheUnlessIsOldOrDoesNotExist($name, $cacheFor));
-	}
-	
-	/**
-     * If cached data exists for $name within $cacheFor, if $return is true, return the cached data, otherwise print it to the output buffer.
-	 * @param $name String The unique name underwhich the cached data is expected to be stored
-	 * @param $cacheFor String A string-representation of a point in the past, best expressed in terms of minutes, hours, days, weeks, or months, e.g., "1 minute" or "2 days" - anything that strtotime() can understand.
-	 * @param $return boolean When true, if cached data is found, that cached data is returned by the function instead of being printed to the output buffer
-	 * @return When no data is cached under $name or when cached data is older than $cacheFor, returns false; otherwise, returns data according to the value of $return.
-	 */
-	static function cached($name, $cacheFor = 0, $return = false) {
-		clAPI::trace("Looking for cached content <b>$name</b> no older than <b>$cacheFor</b>.");
-		
-		if (empty($name)) 
-			return false; 
-		
-		if (($content = self::getCacheUnlessIsOldOrDoesNotExist($name, $cacheFor)) === false) {
-			if (!$return) {
-				self::$currentNameQueue[] = $name;
-				ob_start();
-			}
-			return false;
-		}
-		else {
-			if ($return)
-				return $content;
-			else {
-				echo $content;
-				return true;
-			}	
-		}
-	}
-	
-	static function flush($name) {
-		
-		if (self::isMysqlMode()) {
-			if (!self::initMySql())
-				return false;
-			else { 
-				$md5 = md5($name);
-				if (!@mysql_query("DELETE FROM `".self::cacheTableName()."` WHERE id='$md5'", self::$mysqlConnection) === false && $error = mysql_error(self::$mysqlConnection)) {
-					clAPI::error("Failed to flush cache <b>$md5</b>. See server error log for details.");
-					error_log("Failed to flush cache [$md5]: $error");
-					return false;	
-				}
-				else
-					return true;
-			}
-		}
-		else {
-			if (!($init = self::initFileSystem($name)))
-				return false;
-			else
-				list($fileName, $cachePath, $pathToFile) = $init;
-				
-			if (file_exists($pathToFile) && !@unlink($pathToFile)) {
-				clAPI::error("Failed to delete cache file for <b>$name</b>.");
-				return false;	
-			}
-			else
-				return true;
-		}
-	}
-	
-	public static function saveContent($name, $content, $cacheFor = 0) {
-		
-		if (self::isMysqlMode()) { // mysql cache
-			
-			if (!self::initMySql())
-				return false;
-			else { 
-				$md5 = md5($name);
-				$now = gmdate('Y/m/d H:i:s');
-				if (!@mysql_query("REPLACE INTO `".self::cacheTableName()."` (id, cached_on, content) VALUES ('$md5', '$now', '".mysql_escape_string($content)."')", self::$mysqlConnection) && $error = mysql_error(self::$mysqlConnection)) {
-					clAPI::error("Failed to cache <b>$md5</b>. See server error log for details.");
-					error_log("Failed to cache [$md5]: $error");
-					return false;
-				}		
-				else
-					return true;
-			}
-			
-		}
-		
-		else { // file system cache
-			
-			if (!($init = self::initFileSystem($name)))
-				return false;
-			else
-				list($fileName, $cachePath, $pathToFile) = $init;
-			
-			if (@file_put_contents($pathToFile, $content) === false) {
-				clAPI::error("Failed to save cache file $pathToFile.");
-				return false;	
-			}
-			else
-				return true;
-		}
-	
-	}
-	
-	public static function save() {
-		$content = ob_get_flush();
-		self::saveContent(array_pop(self::$currentNameQueue), $content, 0);
-	}
-	
-	public static function cancel() {
-		ob_end_flush();
-	}
-
-	private static function isMysqlMode() {
-		return (
-			@strlen(self::$options['mysql_host'])
-			&& @strlen(self::$options['mysql_database'])
-			&& @strlen(self::$options['mysql_username'])
-			&& @strlen(self::$options['mysql_password'])
-		);
-	}
-}
-
-if (!function_exists('cached')) {
-	/**
-     * If cached data exists for $name within $cacheFor: if $return is true, return the cached data, otherwise print it to the output buffer.
-	 * @param $name String The unique name underwhich the cached data is expected to be stored
-	 * @param $cacheFor String A string-representation of a point in the past, best expressed in terms of minutes, hours, days, weeks, or months, e.g., "1 minute" or "2 days" - anything that strtotime() can understand.
-	 * @param $return boolean When true, if cached data is found, that cached data is returned by the function instead of being printed to the output buffer
-	 * @return When no data is cached under $name or when cached data is older than $cacheFor, returns false; otherwise, returns data according to the value of $return.
-	 */
-	function cached($name, $cacheFor = 0, $return = false) {
-		return clCache::cached($name, $cacheFor, $return);
-	}
-}
-
-if (!function_exists('save')) {
-	function save() {
-		clCache::save();
-	}
-}
-
-class clMashup implements ArrayAccess, Iterator {
-	
-	private $spuds = array();
-	
-	private $fries = array();
-	
-	function __construct($items_at = null, $sort_by = null, $urls = array()) {
-		foreach($urls as $i => $url) {
-			$spud = new clSpud($i, new clAPI($url), $items_at, $sort_by);
-			$this->spuds[] = $spud;
-		}
-	}
-	
-	function add($source, clAPI $api, $items_at = null, $sort_by = null) {
-		$spud = new clSpud($source, $api, $items_at, $sort_by);
-		$this->spuds[] = $spud;
-		return $spud;
-	}
-	
-	function info() {
-		foreach($this->spuds as $s) 
-			$s->api()->info();
-	}
-	
-	function count() {
-		return count($this->fries);
-	}
-	
-	function parse($cacheFor = 0) {
-		$success = true;
-
-		$mh = curl_multi_init();
-		
-		$spuds_to_parse_now = array();
-		$curl_handles = array();
-		$queued_spuds = array();
-		
-		foreach($this->spuds as $i => $spud) {
-			$from_parser = $spud->api()->queue($cacheFor);
-			if (!is_string($from_parser)) {
-				// store reference to spud for later parsing
-				$url = curl_getinfo($from_parser, CURLINFO_EFFECTIVE_URL);
-				$key = md5($i.$url);
-				$queued_spuds[$key] = $spud;
-				$curl_handles[$i] = $from_parser;
-				
-				// queue in multi handle
-				curl_multi_add_handle($mh, $from_parser);
-			}
-			else {
-				$spud->api()->parseText($from_parser, true);
-				$spuds_to_parse_now[] = $spud;
-			}
-		}
-		
-		// go, go gadget, multi-curl!
-		$running = count($curl_handles);
-		curl_multi_exec($mh, $running); // doesn't block
-		
-		// before we start waiting for queued curl requests, parse the one's we had cached content for
-		foreach($spuds_to_parse_now as $spud) {
-			$this->makeFries($spud);
-		}
-		
-
-		// wait for curl to finish
-		if ($running > 0) {
-			do {
-				curl_multi_exec($mh, $running);
-			} while ($running > 0);
-		}
-		
-		foreach($curl_handles as $i => $ch) {
-			$key = md5($i.curl_getinfo($ch, CURLINFO_EFFECTIVE_URL));
-			$content = curl_multi_getcontent($ch);
-			$spud = $queued_spuds[$key];
-			$spud->api()->parseText($content, false);
-			$this->makeFries($spud);
-		}
-	}
-	
-	private function makeFries(clSpud $spud) {
-		if ($items_at = $spud->getItemsAt()) {
-			foreach($spud->api()->get($items_at) as $node) {
-				$this->fries[] = new clFry($spud, $node);
-			}
-		}
-	}
-	
-	function sort($order = 'descending', $type = MASHUP_SORT_DATE) {
-		$arr = array();
-	
-		foreach($this->fries as $fry) {
-			if ($sort_by = $fry->spud->getSortOn()) {
-				$key = ''.$fry->get($sort_by);
-				if ($type == MASHUP_SORT_DATE)
-					$key = date('c', strtotime($key));
-				
-				while(isset($arr[$key]))
-					$key .= 'a';
-				$arr[$key] = $fry;
-			}
-			else {
-				$key = 0;
-				while (isset($arr[$key]))
-					$key .= 'a';
-				$arr[$key] = $fry;
-			}
-		}
-		
-		if (preg_match('/desc.*/i', $order))
-			krsort($arr);
-		else
-			ksort($arr);
-		
-		$this->fries = array();
-	
-		$keys = array_keys($arr);
-		for($i=0; $i<count($keys); $i++)
-			$this->fries[] = $arr[$keys[$i]];
-	}
-
-	private $i = 0;
-
-	private $limit = null;
-
-	function limit($limit) {
-		$this->limit = $limit;
-		return $this;
-	}
-	
-	function clearLimit() {
-		$this->limit = null;
-		return $this;
-	}
-
-	function current() {
-		return $this->fries[$this->i];
-	}
-	
-	function key() {
-		return $this->i;
-	}
-	
-	function next() {
-		$this->i++;
-	}
-	
-	function rewind() {
-		$this->i = 0;
-	}
-	
-	function valid() {
-		return ($this->limit == null || ($this->i < $this->limit)) && isset($this->fries[$this->i]);
-	}
-	
-	function offsetExists($offset) {
-		return isset($this->fries[$offset]);
-	}
-	
-	function offsetGet($offset) {
-		return $this->fries[$offset];
-	}
-	
-	function offsetSet($offset, $value) {
-		throw new Exception("Mashups are read-only.");
-	}
-	
-	function offsetUnset($offset) {
-		throw new Exception("Mashups are read-only.");
-	}
-	
-} // end clMashup
-
-class clFry {
-	
-	public $spud;
-
-	public $api;
-	
-	public $node;
-	
-	public $source;
-	
-	function __construct(clSpud $spud, clNode $node) {
-		$this->source = $spud->source();
-		$this->api = $spud->api();
-		$this->spud = $spud;
-		$this->node = $node;
-	}	
-	
-	function get($path = null) {
-		return $this->node->get($path);
-	}
-	
-	function has($path = null) {
-		return $this->node->has($path);
-	}
-	
-	function info($path = null) {
-		return $this->node->info($path);
-	}
-	
-}
-
-class clSpud {
-	
-	private $api;
-	
-	private $source;
-	
-	private $sort_by;
-	
-	private $items_at;
-	
-	function __construct($source, clAPI $api, $items_at = null, $sort_by = null) {
-		$this->source = $source;
-		$this->api = $api;
-		$this->items_at = $items_at;
-		$this->sort_by = $sort_by;
-	}
-	
-	function source() {
-		return $this->source;
-	}
-	
-	function api() {
-		return $this->api;
-	}
-	
-	function sort_by($sort_by) {
-		$this->sort_by = $sort_by;
-		return $this;
-	}
-	
-	function items_at($items_at) {
-		$this->items_at = $items_at;
-		return $this;
-	}
-
-	function getItemsAt() {
-		return $this->items_at;
-	}
-	
-	function getSortOn() {
-		return $this->sort_by;
-	}
-
+  }
+  
+  /**
+   * Use XPATH to select elements. But... why? Ugh.
+   * @param 
+   * @return clXmlNode
+   * @deprecated Use clXmlNode::get($selector, true) instead.
+   */
+  function xpath($selector) {
+    return new clXmlNode($this->el->xpath($selector));
+  }
+  
+  function __toString() {
+    return (string) $this->el;
+  }
+  
+  function info() {
+    
+  }
+  
 }
