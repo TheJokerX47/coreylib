@@ -3,7 +3,8 @@
  * Run the coreylib tests.
  */
  
-error_reporting(E_ERROR); 
+error_reporting(E_ALL); 
+// error_reporting(E_ERROR);
 
 // build and test, or test source?
 

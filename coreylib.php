@@ -1957,12 +1957,43 @@ abstract class clNode {
   const REGEX_ELEMENT_ATTRIBUTE = '/([^@]+)(@(.*))?$/';
   
   /**
+   * Factory method: return the correct type of clNode.
+   * @param $string The content to parse
+   * @param string $type The type - supported include "xml" and "json"
+   * 
+   */
+  function getNodeFor($string, $type) {
+    if ($type == 'xml') {
+      $node = new clXmlNode();
+    } else if ($type == 'json') {
+      $node = new clJsonNode();
+    } else {
+      throw new clException("Unsupported Node type: $type");
+    }
+    
+    if (!$node->parse($string)) {
+      return false;
+    } else {
+      return $node;
+    }
+  }
+  
+  /**
+   * Retrieve the first element or attribute queried by $selector.
+   * @param string $selector
+   * @return mixed an instance of a clNode subclass, or a scalar value
+   * @throws clException When an attribute requested does not exist.
+   */ 
+  function first($selector) {
+    $values = $this->get($selector);
+    return is_array($values) ? @$values[0] : $values;
+  }
+  
+  /**
    * Retrieve some data from this Node or its children.
    * @param string $selector A query conforming to the coreylib selector syntax.
-   * @param int $limit A limit on the number of nodes to return, when searching for elements.
-   * @return mixed A scalar value or null when an attribute is requested; an instance of a subclass
-   * of clNode when only one element should be returned; in all other cases, an array of
-   * clNode-subclassed objects.
+   * @param int $limit A limit on the number of values to return
+   * @return mixed An array or a single value, given to $selector
    * @throws clException When an attribute requested does not exist.
    */
   function get($selector, $limit = null) {
@@ -1989,38 +2020,90 @@ abstract class clNode {
 		// like foo
 		// like foo@bar
 		} else if (preg_match(self::REGEX_ELEMENT_ATTRIBUTE, $this_selector, $matches)) { 
-			$sel = $matches[1];	
+			$sel = $matches[1];
 			$attribute = (isset($matches[3])) ? $matches[3] : null;
 		}
+		
 		
 		// should we be looking for an element?
 	  if ($sel) {
 	    $children = $this->children($sel);
 	    
+	    if (!count($children)) {
+        return array();
+      }
+	    
       // validate $index
 	    if ($index && $index > count($children)-1) {
-	      throw new clException(sprintf("There are only %d elements named [%s] in [%s]: %d is out of range.", count($children), $sel, $selector, $index));
+	      return null;
 	    
-	    // implement $index
-	    } else if ($index) {
-	      $child = $children[$index];
+	    // implement $index: we can return only one result
+	    } else if ($index !== null) {
+	      $child = @$children[$index];
 	      
-	      if ($attribute) {
-	        return $child->attribute($attribute);
-	      } else {
-	        if (count($selectors)) {
-	          return $child->get(implode('/', $selectors));
-	        } else {
-	          return $child;
-	        }
-	      }
-	      
-	    // index is not defined
+        if (count($selectors)) {
+          return $child->get(implode('/', $selectors));
+        } else {
+          if ($attribute) {
+  	        return $child->attribute($attribute);
+          } else {
+            return $child;
+          }
+        }
+  	    
+	    // index is not defined: we can return an array
 	    } else {
-	      if ($limit) {
-	        return array_slice($children, 0, $limit);
+	      // there's more to select
+	      if (count($selectors)) {
+	        
+	        // recursively aggregate the results
+          $aggregated = $results;
+          $last = count($selectors)-1;
+          foreach($selectors as $i => $sel) {
+            $new_agg = array();
+            foreach($aggregated as $agg) {
+              $res = $agg->get($sel);
+              $new_agg = array_merge($new_agg, $res);
+            }
+            // if this is not the last iteration, remove all non-clXmlNode entries and null entries
+            if ($i != $last) {
+              foreach($new_$agg as $r => $res) {
+                if (!is_object($r)) {
+                  unset($new_$agg[$r]);
+                }
+              }              
+            }
+            $aggregated = $new_agg;
+          }
+          
+          if ($limit) {
+            $aggregated = array_slice($aggregated, 0, $limit);
+          }
+          
+          return $aggregated;
+          
+	      // there's nothing more to select
 	      } else {
-	        return $children;
+	        
+	        // attribute request? aggregate the values
+	        if ($attribute) {
+	          $atts = array();
+            foreach($children as $child) {
+              $atts[] = $child->attribute($attribute);
+              if ($limit && count($atts) > $limit) {
+                break;
+              }
+            }
+            
+            return $atts;
+	          
+	        } else {
+	          if ($limit) {
+	            $children = array_slice($children, 0, $limit);
+	          }
+	          
+	          return $children;
+	        }
 	      }
 	    }
 	    
@@ -2036,6 +2119,8 @@ abstract class clNode {
   
   abstract function __toString();
   
+  abstract function parse($string = '');
+  
 }
 
 //class clJsonNode extends clNode {}
@@ -2050,24 +2135,30 @@ class clXmlNode extends clNode {
   /**
    * Wrap a SimpleXMLElement object.
    * @param SimpleXMLElement $simple_xml_el
-   * @param clXmlNode $parent (optional)
    * @param array $namespaces (optional)
    */
-  function __construct(&$simple_xml_el, &$parent = null, $ns = '', $namespaces = null) {
-    $this->el = &$simple_xml_el;
-    $this->parent = &$parent;
+  function __construct(&$simple_xml_el = null, $ns = '', &$namespaces = null) {
+    $this->el = $simple_xml_el;
     $this->ns = $ns;
     $this->namespaces = $namespaces;
     
-    if (!$this->namespaces) {
-      if ($this->parent) {
-        $this->namespaces = &$this->parent->namespaces;
-      } else {
-        $this->namespaces = $this->el->getNamespaces(true);
-        $this->namespaces[''] = null;
-      }
+    if (!$this->namespaces && $this->el) {
+      $this->namespaces = $this->el->getNamespaces(true);
+      $this->namespaces[''] = null;
     }
-
+  }
+  
+  function parse($string = '') {
+    if ($sxe = simplexml_load_string($string)) {
+      $this->el = $sxe;
+      $this->namespaces = $this->el->getNamespaces(true);
+      $this->namespaces[''] = null;
+      return true;
+    } else {
+      // TODO: in PHP >= 5.1.0, it's possible to silence errors and then iterate over them
+      // http://us.php.net/manual/en/function.simplexml-load-string.php
+      return false;
+    }
   }
   
   /**
@@ -2108,10 +2199,10 @@ class clXmlNode extends clNode {
     if (!$this->children) {
       $this->children = array();
       foreach($this->namespaces as $ns => $uri) {
-        $this->children[$ns] = $this->el->children($ns, true);
+        $this->children[$ns] = &$this->el->children($ns, true);
       }
     }
-    
+  
     @list($ns, $name) = explode(':', $selector);
     
     if (!$name) {
@@ -2125,7 +2216,7 @@ class clXmlNode extends clNode {
     if (!$ns && !$name) {
       foreach($this->children as $ns => $child_sxe) {
         foreach($child_sxe as $child) {
-          $children[] = new clXmlNode($child, new clXmlNode($child_sxe, $this, $ns), $ns);
+          $children[] = new clXmlNode($child, $ns, $this->namespaces);
         }
       }
       return $children;
@@ -2143,7 +2234,7 @@ class clXmlNode extends clNode {
       foreach($this->children as $ns => $child_sxe) {
         foreach($child_sxe as $child) {
           if ($child->getName() == $name) {
-            $children[] = new clXmlNode($child, new clXmlNode($child_sxe, $this, $ns), $ns);
+            $children[] = new clXmlNode($child, $ns, $this->namespaces);
           }
         }
       }
@@ -2186,7 +2277,7 @@ class clXmlNode extends clNode {
           if ($ns) {
             $this_name = "$ns:$this_name";
           }
-          $attributes[$this_name] = $val;
+          $attributes[$this_name] = (string) $val;
         }
       }
       return $attributes;
@@ -2195,7 +2286,7 @@ class clXmlNode extends clNode {
     } else if ($ns && isset($this->attributes[$ns])) {
       foreach($this->attributes[$ns] as $this_name => $val) {
         if ($this_name == $name) {
-          return $val;
+          return (string) $val;
         }
       }
      
@@ -2206,7 +2297,7 @@ class clXmlNode extends clNode {
       foreach($this->attributes as $ns => $atts) {
         foreach($atts as $this_name => $val) {
           if ($this_name == $name) {
-            return $val;
+            return (string) $val;
           }
         }
       }

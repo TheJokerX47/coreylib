@@ -98,7 +98,7 @@ abstract class clNode {
 	    $children = $this->children($sel);
 	    
 	    if (!count($children)) {
-        return $limit == 1 ? null : array();
+        return array();
       }
 	    
       // validate $index
@@ -124,12 +124,38 @@ abstract class clNode {
 	      // there's more to select
 	      if (count($selectors)) {
 	        
-	        // aggregate the results
-
-	        
+	        // recursively aggregate the results
+          $aggregated = $children;
+          $last = count($selectors)-1;
+          foreach($selectors as $i => $sel) {
+            $new_agg = array();
+            foreach($aggregated as $child) {
+              $res = $child->get($sel);
+              $new_agg = array_merge($new_agg, $res);
+            }
+            
+            // if this is not the last iteration, remove all non-clXmlNode entries and null entries
+            if ($i != $last) {
+              foreach($new_agg as $r => $res) {
+                if (!is_object($res)) {
+                  unset($new_agg[$r]);
+                }
+              }              
+            }
+            
+            $aggregated = $new_agg;
+          }
+          
+          if ($limit) {
+            $aggregated = array_slice($aggregated, 0, $limit);
+          }
+          
+          return $aggregated;
+          
 	      // there's nothing more to select
 	      } else {
 	        
+	        // attribute request? aggregate the values
 	        if ($attribute) {
 	          $atts = array();
             foreach($children as $child) {
@@ -193,13 +219,13 @@ class clXmlNode extends clNode {
   }
   
   function parse($string = '') {
-    if ($sxe = simplexml_load_string($string)) {
+    if (($sxe = simplexml_load_string(trim($string))) !== false) {
       $this->el = $sxe;
       $this->namespaces = $this->el->getNamespaces(true);
       $this->namespaces[''] = null;
       return true;
     } else {
-      // TODO: in PHP >= 5.1.0, it's possible to silence errors and then iterate over them
+      // TODO: in PHP >= 5.1.0, it's possible to silence SimpleXML parsing errors and then iterate over them
       // http://us.php.net/manual/en/function.simplexml-load-string.php
       return false;
     }

@@ -32,11 +32,10 @@ class XmlNodeApiTests extends UnitTestCase {
     $persons = $people->get('person');
     // there should be two of them
     $this->assertEqual(2, count($persons));
-    
     $names = $people->get('person/kids/kid@name');
     $this->assertEqual(2, count($names));
-    $this->assertEqual('Isabela Collegeman', $names[0]);
-    $this->assertEqual('Isabela Collegeman', $names[1]);
+    $this->assertEqual('Isabela Collegeman', @$names[0]);
+    $this->assertEqual('Isabela Collegeman', @$names[1]);
   }
   
   function testMultiplicity() {
@@ -64,17 +63,20 @@ class XmlNodeApiTests extends UnitTestCase {
     $this->assertEqual(10, count($employees));
   }
   
-  function testNamespaces() {
-    $xml = simplexml_load_string("
-      <their:pets xmlns:his='http://fatpandadev.com/coreylib/tests/his' xmlns:her='http://fatpandadev.com/coreylib/tests/her'>
-        <his:dogs>
+  function testRecursiveAggregation() {
+    $xml = "
+      <pets>
+        <dogs>
           <dog name='Buddy' />
-        </his:dogs>
-        <her:dogs>
+        </dogs>
+        <dogs>
           <dog name='Lacey' />
-        </her:dogs>
-      </their:pets>
-    ");
+        </dogs>
+        <cats>
+          <cat name='Fluffy' />
+        </cats>
+      </pets>
+    ";
     
     $sxe = simplexml_load_string($xml);
     
@@ -84,10 +86,32 @@ class XmlNodeApiTests extends UnitTestCase {
     $pets = clNode::getNodeFor($xml, 'xml');
     // same test as on SXE above
     $this->assertEqual('pets', $pets->getName());
-    // his Dog's name is Buddy
-    $this->assertEqual('Buddy', $pets->get('dogs[0]/dog[0]@name'));
-    // her Dog's name is Lacey
-    $this->assertEqual('Lacey', $pets->get('dogs[1]/dog[0]@name'));
+    // aggregate dog names
+    $this->assertEqual(array('Buddy', 'Lacey'), $pets->get('dogs/dog@name'));
+  }
+  
+  function testNamespaces() {
+    $xml = "
+      <their:pets xmlns:their='http://fatpandadev.com/coreylib/tests/their' xmlns:his='http://fatpandadev.com/coreylib/tests/his' xmlns:her='http://fatpandadev.com/coreylib/tests/her'>
+        <his:dogs>
+          <dog name='Buddy' />
+        </his:dogs>
+        <her:dogs>
+          <dog name='Lacey' />
+        </her:dogs>
+      </their:pets>
+    ";
+    
+    $sxe = simplexml_load_string($xml);
+    
+    // make sure SimpleXMLElement is working properly
+    $this->assertEqual('pets', $sxe->getName());
+    // wrap in clXmlNode
+    $pets = clNode::getNodeFor($xml, 'xml');
+    // same test as on SXE above
+    $this->assertEqual('pets', $pets->getName());
+    // aggregate dog names
+    $this->assertEqual(array('Buddy', 'Lacey'), $pets->get('dogs/dog@name'));
   }
   
 }
