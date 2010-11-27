@@ -1,4 +1,7 @@
 <?php
+/**
+ * Unit-test clXmlNode implementation of clNode.
+ */
 class XmlNodeApiTests extends UnitTestCase {
 
   function testBasic() {
@@ -31,9 +34,9 @@ class XmlNodeApiTests extends UnitTestCase {
     // get the "person" children of people
     $persons = $people->get('person');
     // there should be two of them
-    $this->assertEqual(2, count($persons));
+    $this->assertEqual(2, $persons->size());
     $names = $people->get('person kids kid@name');
-    $this->assertEqual(2, count($names));
+    $this->assertEqual(2, $names->size());
     $this->assertEqual('Jared Collegeman', @$names[0]);
     $this->assertEqual('Isabela Collegeman', @$names[1]);
   }
@@ -60,7 +63,7 @@ class XmlNodeApiTests extends UnitTestCase {
     
     $employment = clNode::getNodeFor($xml, 'xml');
     $employees = $employment->get('employer employee');
-    $this->assertEqual(10, count($employees));
+    $this->assertEqual(10, $employees->size());
   }
   
   function testRecursiveAggregation() {
@@ -87,7 +90,7 @@ class XmlNodeApiTests extends UnitTestCase {
     // same test as on SXE above
     $this->assertEqual('pets', $pets->getName());
     // aggregate dog names
-    $this->assertEqual(array('Buddy', 'Lacey'), $pets->get('dogs dog@name'));
+    $this->assertEqual(array('Buddy', 'Lacey'), $pets->get('dogs dog@name')->toArray());
   }
   
   function testNamespaces() {
@@ -111,7 +114,7 @@ class XmlNodeApiTests extends UnitTestCase {
     // same test as on SXE above
     $this->assertEqual('pets', $pets->getName());
     // aggregate dog names
-    $this->assertEqual(array('Buddy', 'Lacey'), $pets->get('dogs dog@name'));
+    $this->assertEqual(array('Buddy', 'Lacey'), $pets->get('dogs dog@name')->toArray());
   }
   
 }

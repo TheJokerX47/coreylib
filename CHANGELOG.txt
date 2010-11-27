@@ -2,14 +2,12 @@ Changes in coreylib since 1.0.3
 
 v2.0 December 1, 2010
 
-* Complete rewrite.
-* Coordinated oAuth support
-* Facebook API support via facebook: protocol
-* Info output stacks into absolutely positioned HTML
-* Info output includes PHP snippets for navigating the tree
-* Actually supports JSON now
-
-
+* Parse XML and JSON (for reals)
+* Revised baked-in support for oAuth 1.0a
+* Baked-in support for the Facebook API via special facebook:// protocol
+* info() output fully revised with focus on usability
+* New, backwards-compatible selector syntax, inspired by jQuery
+* Complete rewrite with focus on modular, unit-testable, OOP code 
 
 v1.1.5 June 6, 2010
 

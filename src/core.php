@@ -24,25 +24,6 @@
 class clException extends Exception {}
  
 /**
- * Logger.
- */
-class clLog {
-  
-  static function log($message) {
-    trigger_error($message, E_USER_NOTICE);
-  }
-  
-  static function warn() {
-    trigger_error($message, E_USER_WARN);
-  }
-  
-  static function error() {
-    trigger_error($message, E_USER_ERROR);
-  }
-  
-}
- 
-/**
  * The entry point for all parsing.
  */
 class clApi {
@@ -105,6 +86,5 @@ class clApi {
 if (!function_exists('coreylib')):
   function coreylib($url, $cache_for = null, $params = array(), $method = clApi::METHOD_GET) {
     $api = new clApi($url);
-    
   }
 endif;
