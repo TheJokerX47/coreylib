@@ -18,11 +18,213 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA. 
  */
 
-abstract class clNode {
+class clSelector implements ArrayAccess, Iterator {
   
-  const REGEX_ATTRIBUTE = '/^@(.*)?$/';
-  const REGEX_ARRAY_ATTRIBUTE = '/(.*)\[(\d+)\](@(.*))?$/';
-  const REGEX_ELEMENT_ATTRIBUTE = '/([^@]+)(@(.*))?$/';
+  static $sep = "#(\s+|/)#";
+  
+  static $regex;
+  
+  private $selectors = array();
+  
+  private $i = 0;
+  
+  static $tokenize = array('#', ';', '&', ',', '.', '+', '*', '~', "'", ':', '"', '!', '^', '$', '[', ']', '(', ')', '=', '>', '|', '/', '@', ' ');
+  
+  private $tokens;
+  
+  private function tokenize($string) {
+    $tokenized = false;
+    foreach(self::$tokenize as $t) {
+      while(($at = strpos($string, "\\$t")) !== false) {
+        $tokenized = true;
+        $token = "TKS".count($this->tokens)."TKE";
+        $this->tokens[] = $t;
+        $string = substr($string, 0, $at).$token.substr($string, $at+2);
+      }
+    }
+    return $tokenized ? 'TK'.$string : $string;
+  }
+  
+  private function untokenize($string) {
+    if (!$string || strpos($string, 'TK') !== 0) {
+      return $string;
+    } else {
+      foreach($this->tokens as $i => $t) {
+        $token = "TKS{$i}TKE";
+        $string = preg_replace("/{$token}/", $t, $string);
+      }
+      return substr($string, 2);
+    }
+  }
+  
+  function __construct($query) {
+    if (!self::$regex) {
+      self::$regex = self::generateRegEx();
+    }
+    
+    $tokenized = $this->tokenize($query);
+    if (!($selectors = preg_split(self::$sep, $tokenized))) {
+      throw new clException("Failed to parse selector query [$query].");
+    }
+    
+    foreach($selectors as $sel) {
+      if (!preg_match(self::$regex, $sel, $matches)) {
+        throw new clException("Failed to parse [$sel], parse of [$query].");
+      }
+      
+      $sel = (object) array(
+        'element' => $this->untokenize(@$matches['element']),
+        'is_expression' => $this->untokenize(@$matches['attrib_exp_name']),
+        'attrib' => $this->untokenize(@$matches['attrib_exp_name'] ? $matches['attrib_exp_name'] : @$matches['attrib']),
+        // in coreylib v1, passing "@attributeName" retrieved a scalar value
+        'is_attrib_getter' => preg_match('/^@.*$/', $query),
+        'test' => @$matches['test'],
+        'value' => $this->untokenize(@$matches['value']),
+        'suffixes' => null
+      );
+      
+      if ($suffixes = @$matches['suffix']) {
+        $all = array_filter(explode(':', $suffixes));
+        $suffixes = array();
+        
+        foreach($all as $suffix) {
+          $open = strpos($suffix, '(');
+          $close = strrpos($suffix, ')');
+          if ($open !== false && $close !== false) {
+            $label = substr($suffix, 0, $open);
+            $val = $this->untokenize(substr($suffix, $open+1, $close-$open-1));
+          } else {
+            $label = $suffix;
+            $val = true;
+          }
+          $suffixes[$label] = $val;
+        }
+        
+        $sel->suffixes = $suffixes;
+      }
+      
+      // alias for eq(), and backwards compat with coreylib v1
+      if (!isset($sel->suffixes['eq']) && !is_null($index = @$matches['index'])) {
+        $sel->suffixes['eq'] = $index;
+      }
+      
+      $this->selectors[] = $sel;
+    }
+  }
+  
+  function __get($name) {
+    $sel = $this->selectors[$this->i];
+    return $sel->{$name};
+  }
+  
+  function has_suffix($name) {
+    $sel = $this->selectors[$this->i];
+    return @$sel->suffixes[$name];
+  }
+  
+  function size() {
+    return count($this->selectors);
+  }
+  
+  function current() {
+    return $this->selectors[$this->i];
+  }
+  
+  function key() {
+    return $this->i;
+  }
+  
+  function next() {
+    $this->i++;
+  }
+  
+  function rewind() {
+    $this->i = 0;
+  }
+  
+  function valid() {
+    return isset($this->selectors[$this->i]);
+  }
+  
+  function offsetExists($offset) {
+    return isset($this->selectors[$offset]);
+  }
+  
+  function offsetGet($offset) {
+    return $this->selectors[$offset];
+  }
+  
+  function offsetSet($offset, $value) {
+    throw new clException("clSelector objects are read-only.");
+  }
+  
+  function offsetUnset($offset) {
+    throw new clException("clSelector objects are read-only.");
+  }
+  
+  function getSelectors() {
+    return $this->selectors;
+  }
+  
+  static function generateRegEx() {
+    // "Names and Tokens" http://www.w3.org/TR/REC-xml/
+    // TODO: unicode characters accepted: \192-\214\216-\246\248-\767\768-\879\880-\893\895-\8191\8204-\8205\8255-\8256\8304-\8591\11264-\12271\12289-\55295\63744-\64975\65008-\65533\65536-\983039
+    $name = "[:A-Za-z0-9\.]+";
+    
+    // element express with optional index
+    $element = "((?P<element>{$name})(\\[(?P<index>[0-9]+)\\])?)";
+    
+    // attribute expression 
+    $attrib = "@(?P<attrib>{$name})";
+    
+    // tests of equality
+    $tests = implode('|', array(
+      // Selects elements that have the specified attribute with a value either equal to a given string or starting with that string followed by a hyphen (-).
+      "\\|=",
+      // Selects elements that have the specified attribute with a value containing the a given substring.
+      "\\*=",
+      // Selects elements that have the specified attribute with a value containing a given word, delimited by whitespace.
+      "~=",
+      // Selects elements that have the specified attribute with a value ending exactly with a given string. The comparison is case sensitive.
+      "\\$=",
+      // Selects elements that have the specified attribute with a value exactly equal to a certain value.
+      "=",
+      // Select elements that either don't have the specified attribute, or do have the specified attribute but not with a certain value.
+      "\\!=",
+      // Selects elements that have the specified attribute with a value beginning exactly with a given string.
+      "\\^="
+    ));
+    
+    // suffix selectors
+    $suffixes = implode('|', array(
+      // retun nth element
+      ":eq\([0-9]+\)",
+      // return the first element
+      ":first",
+      // return the last element
+      ":last",
+      // greater than index
+      ":gt\([0-9]+\)",
+      // less than index
+      ":lt\([0-9]+\)",
+      // even only
+      ":even",
+      // odd only
+      ":odd"
+    ));
+    
+    $suffix_exp = "(?P<suffix>({$suffixes})+)";
+    
+    // attribute expression
+    $attrib_exp = "\\[@?((?P<attrib_exp_name>{$name})((?P<test>{$tests})\"(?P<value>.*)\")?)\\]";
+    
+    // the final expression
+    return "#^{$element}?(({$attrib})|({$attrib_exp}))*{$suffix_exp}*$#";
+  }
+  
+}
+
+abstract class clNode {
   
   /**
    * Factory method: return the correct type of clNode.
@@ -58,130 +260,91 @@ abstract class clNode {
   }
   
   /**
-   * Retrieve some data from this Node or its children.
-   * @param string $selector A query conforming to the coreylib selector syntax.
+   * Retrieve some data from this Node and/or its children.
+   * @param mixed &$selector A query conforming to the coreylib selector syntax, or an instance of clSelector
    * @param int $limit A limit on the number of values to return
+   * @param array &$results Results from the previous recursive iteration of ::get
    * @return mixed An array or a single value, given to $selector
-   * @throws clException When an attribute requested does not exist.
    */
-  function get($selector, $limit = null) {
-    $selectors = explode('/', $selector);
-    $this_selector = array_shift($selectors);
-    
-    $sel = null;
-		$index = null;
-		$attribute = null;
-
-    // $sel is just an attribute, like "@foo"
-		if (preg_match(self::REGEX_ATTRIBUTE, $this_selector, $matches)) { 
-			$attribute = $matches[1];
-		
-		// $sel is an array spec and, optionally, includes an attribute
-		// like foo[1]
-		// like foo[1]@bar
-		} else if (preg_match(self::REGEX_ARRAY_ATTRIBUTE, $this_selector, $matches)) { 
-			$sel = $matches[1];	
-			$index = (int) $matches[2];	
-			$attribute = (isset($matches[4])) ? $matches[4] : null;
-			
-		// $sel is an element and, optionally, includes an attribute
-		// like foo
-		// like foo@bar
-		} else if (preg_match(self::REGEX_ELEMENT_ATTRIBUTE, $this_selector, $matches)) { 
-			$sel = $matches[1];
-			$attribute = (isset($matches[3])) ? $matches[3] : null;
-		}
-		
-		
-		// should we be looking for an element?
-	  if ($sel) {
-	    $children = $this->children($sel);
-	    
-	    if (!count($children)) {
+  function get($selector, $limit = null, &$results = null) {
+    // shorten the variable name, for convenience
+    $sel = $selector;
+    if (!is_object($sel)) {
+      $sel = new clSelector($sel);
+      if (!$sel->valid()) {
+        // nothing to process
         return array();
       }
-	    
-      // validate $index
-	    if ($index && $index > count($children)-1) {
-	      return null;
-	    
-	    // implement $index: we can return only one result
-	    } else if ($index !== null) {
-	      $child = @$children[$index];
-	      
-        if (count($selectors)) {
-          return $child->get(implode('/', $selectors));
-        } else {
-          if ($attribute) {
-  	        return $child->attribute($attribute);
-          } else {
-            return $child;
+    }
+    
+    if (is_null($results)) {
+      $results = array($this);
+    } else if (!is_array($results)) {
+      $results = array($results);
+    } 
+    
+    if ($sel->element) {
+      $agg = array();
+      foreach($results as $child) {
+        if (is_object($child)) {
+          $agg = array_merge($agg, $child->children($sel->element));
+        }
+      }
+      $results = $agg;
+    }
+    
+    
+    if (!count($results)) {
+      return array();
+    }
+    
+    if ($sel->attrib) {
+      if ($sel->is_expression) {
+        
+        
+        
+        
+        
+      } else {
+        $agg = array();
+        foreach($results as $child) {
+          if (is_object($child)) {
+            $att = $child->attribute($sel->attrib);
+            if (is_array($att)) {
+              $agg = array_merge($agg, $att);
+            } else {
+              $agg[] = $att;
+            }
           }
         }
-  	    
-	    // index is not defined: we can return an array
-	    } else {
-	      // there's more to select
-	      if (count($selectors)) {
-	        
-	        // recursively aggregate the results
-          $aggregated = $children;
-          $last = count($selectors)-1;
-          foreach($selectors as $i => $sel) {
-            $new_agg = array();
-            foreach($aggregated as $child) {
-              $res = $child->get($sel);
-              $new_agg = array_merge($new_agg, $res);
-            }
-            
-            // if this is not the last iteration, remove all non-clXmlNode entries and null entries
-            if ($i != $last) {
-              foreach($new_agg as $r => $res) {
-                if (!is_object($res)) {
-                  unset($new_agg[$r]);
-                }
-              }              
-            }
-            
-            $aggregated = $new_agg;
-          }
-          
-          if ($limit) {
-            $aggregated = array_slice($aggregated, 0, $limit);
-          }
-          
-          return $aggregated;
-          
-	      // there's nothing more to select
-	      } else {
-	        
-	        // attribute request? aggregate the values
-	        if ($attribute) {
-	          $atts = array();
-            foreach($children as $child) {
-              $atts[] = $child->attribute($attribute);
-              if ($limit && count($atts) > $limit) {
-                break;
-              }
-            }
-            
-            return $atts;
-	          
-	        } else {
-	          if ($limit) {
-	            $children = array_slice($children, 0, $limit);
-	          }
-	          
-	          return $children;
-	        }
-	      }
-	    }
-	    
-	  // no element: just an attribute spec  
-	  } else if ($attribute) {
-	    return $this->attribute($attribute);
-	  }
-	}
+        
+        if ($sel->is_attrib_getter) {
+          return @$agg[0];
+        } else {
+          $results = $agg;
+        }
+      }
+    }
+    
+    if ($sel->suffixes) {
+      
+    }
+    
+    if (!count($results)) {
+      return array();
+    }
+      
+    $sel->next();
+    if ($sel->valid()) {
+      $results = $this->get($sel, null, $results);
+    }  
+    
+    if ($limit && is_array($results)) {
+      $results = array_slice($results, 0, $limit);
+    }
+    
+    return $results;
+  }
   
   protected abstract function attribute($selector = '');
   
@@ -210,7 +373,10 @@ class clXmlNode extends clNode {
   function __construct(&$simple_xml_el = null, $ns = '', &$namespaces = null) {
     $this->el = $simple_xml_el;
     $this->ns = $ns;
-    $this->namespaces = $namespaces;
+    
+    if (!is_null($namespaces)) {
+      $this->namespaces = $namespaces;
+    }
     
     if (!$this->namespaces && $this->el) {
       $this->namespaces = $this->el->getNamespaces(true);
@@ -237,7 +403,7 @@ class clXmlNode extends clNode {
   function __call($fx_name, $args) {
     $result = call_user_func_array(array($this->el, $fx_name), $args);
     if ($result instanceof SimpleXMLElement) {
-      return new clXmlNode($result, $this);
+      return new clXmlNode($result);
     } else {
       return $result;
     }
@@ -249,7 +415,7 @@ class clXmlNode extends clNode {
   function __get($name) {
     $result = $this->el->{$name};
     if ($result instanceof SimpleXMLElement) {
-      return new clXmlNode($result, $this);
+      return new clXmlNode($result);
     } else {
       return $result;
     }
@@ -265,14 +431,14 @@ class clXmlNode extends clNode {
    * @param string $selector A name, e.g., "foo", or a namespace-prefixed name, e.g., "me:foo"
    * @return array of clXmlNodes, when found; otherwise, empty array
    */
-  protected function children($selector = '') {
+  protected function children($selector = '') {    
     if (!$this->children) {
       $this->children = array();
       foreach($this->namespaces as $ns => $uri) {
         $this->children[$ns] = &$this->el->children($ns, true);
       }
     }
-  
+    
     @list($ns, $name) = explode(':', $selector);
     
     if (!$name) {
@@ -295,7 +461,7 @@ class clXmlNode extends clNode {
     } else if ($ns && isset($this->children[$ns])) {
       foreach($this->children[$ns] as $child) {
         if ($child->getName() == $name) {
-          $children[] = new clXmlNode($child, $this, $ns);
+          $children[] = new clXmlNode($child, $ns);
         }
       }
     
@@ -322,7 +488,7 @@ class clXmlNode extends clNode {
    * matches are found.
    * @param string $selector A name, e.g., "foo", or a namespace-prefixed name, e.g., "me:foo"
    * @return mixed a scalar value when $selector is defined; otherwise, an array of all attributes and values
-   * @throws clException When $selector is defined and attribute is not found
+   *  or, when no attribute $selector is found, null
    */
   protected function attribute($selector = '') {
     if (!$this->attributes) {
@@ -360,8 +526,6 @@ class clXmlNode extends clNode {
         }
       }
      
-      throw new clException(sprintf("[%s:%s] attribute not found in [%s]", $ns, $name, $this->getName()));
-    
     // looking for the name across all namespaces
     } else {
       foreach($this->attributes as $ns => $atts) {
@@ -371,9 +535,9 @@ class clXmlNode extends clNode {
           }
         }
       }
-      
-      throw new clException(sprintf("[%s] attribute not found in [%s]", $name, $this->getName()));
     }
+    
+    return null;
   }
   
   /**

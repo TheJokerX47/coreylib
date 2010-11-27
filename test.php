@@ -25,7 +25,7 @@ class AllTests extends TestSuite {
     parent::TestSuite();
     $dir = opendir(dirname(__FILE__).'/tests');
     while ($entry = readdir($dir)) {
-      if ($entry != '.' && $entry != '..') {
+      if (preg_match('/tests\.php$/i', $entry)) {
         $this->addFile('tests/'.$entry);
       }
     }
