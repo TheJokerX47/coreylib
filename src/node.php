@@ -18,6 +18,9 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA. 
  */
 
+/**
+ * Parser for jQuery-inspired selector syntax.
+ */
 class clSelector implements ArrayAccess, Iterator {
   
   static $sep = "#(\s+|/)#";
@@ -224,6 +227,10 @@ class clSelector implements ArrayAccess, Iterator {
   
 }
 
+/**
+ * Models a discreet unit of data. This unit of data can have attributes (or properties)
+ * and children, themselves instances of clNode. 
+ */
 abstract class clNode {
   
   /**
@@ -356,8 +363,14 @@ abstract class clNode {
   
 }
 
+/**
+ * JSON implementation of clNode, wraps the results of json_decode.
+ */
 //class clJsonNode extends clNode {}
 
+/**
+ * XML implementation of clNode, wraps instances of SimpleXMLElement.
+ */
 class clXmlNode extends clNode {
   
   private $el;
