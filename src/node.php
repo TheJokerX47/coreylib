@@ -79,7 +79,7 @@ class clSelector implements ArrayAccess, Iterator {
       
       $sel = (object) array(
         'element' => $this->untokenize(@$matches['element']),
-        'is_expression' => !is_null($this->untokenize(@$matches['attrib_exp'])),
+        'is_expression' => ($this->untokenize(@$matches['attrib_exp']) != false),
         // in coreylib v1, passing "@attributeName" retrieved a scalar value;
         'is_attrib_getter' => preg_match('/^@.*$/', $query),
         // defaults for these:
@@ -88,6 +88,10 @@ class clSelector implements ArrayAccess, Iterator {
         'suffixes' => null,
         'test' => null
       );
+      
+      if (!$sel->element && !$sel->is_attrib_getter) {
+        $sel->element = '*';
+      }
       
       if ($exp = @$matches['attrib_exp']) {
         // multiple expressions?
@@ -140,7 +144,7 @@ class clSelector implements ArrayAccess, Iterator {
       }
       
       // alias for eq(), and backwards compat with coreylib v1
-      if (!isset($sel->suffixes['eq']) && !is_null($index = @$matches['index'])) {
+      if (!isset($sel->suffixes['eq']) && ($index = @$matches['index'])) {
         $sel->suffixes['eq'] = $index;
       }
       
@@ -203,9 +207,9 @@ class clSelector implements ArrayAccess, Iterator {
   }
   
   static function generateRegEx() {
-    // "Names and Tokens" http://www.w3.org/TR/REC-xml/
-    // TODO: unicode characters accepted: \192-\214\216-\246\248-\767\768-\879\880-\893\895-\8191\8204-\8205\8255-\8256\8304-\8591\11264-\12271\12289-\55295\63744-\64975\65008-\65533\65536-\983039
-    $name = "[:A-Za-z0-9\.]+";
+    // characters comprising valid names
+    // should not contain any of the characters in self::$tokenize
+    $name = '[A-Za-z0-9\_\-]+';
     
     // element express with optional index
     $element = "((?P<element>{$name})(\\[(?P<index>[0-9]+)\\])?)";
@@ -246,7 +250,9 @@ class clSelector implements ArrayAccess, Iterator {
       // even only
       ":even",
       // odd only
-      ":odd"
+      ":odd",
+      // empty - no children, no text
+      ":empty"
     ));
     
     $suffix_exp = "(?P<suffix>({$suffixes})+)";
@@ -284,6 +290,14 @@ class clNodeArray implements ArrayAccess, Iterator {
       return $node->{$name};
     } else {
       return null;
+    }
+  }
+  
+  function __call($name, $args) {
+    if (($node = @$this->arr[0]) && is_object($node)) {
+      return call_user_func_array(array($node, $name), $args);
+    } else if (!is_null($node)) {
+      throw new Exception("Value in clNodeArray at index 0 is not an object.");
     }
   }
   
@@ -463,11 +477,10 @@ abstract class clNode implements ArrayAccess {
         }
       }
       $results = $agg;
-    }
-    
-    
-    if (!count($results)) {
-      return new clNodeArray();
+      
+      if (!count($results)) {
+        return new clNodeArray();
+      }
     }
     
     if ($sel->attrib) {
@@ -502,18 +515,50 @@ abstract class clNode implements ArrayAccess {
           $results = $agg;
         }
       }
-    }
-    
-    if (!count($results)) {
-      return new clNodeArray();
+      
+      if (!count($results)) {
+        return new clNodeArray();
+      }
     }
     
     if ($sel->suffixes) {
+      foreach($sel->suffixes as $suffix => $val) { 
+        if ($suffix == 'gt') {
+          $results = array_slice($results, $index);
+        }
       
-    }
-    
-    if (!count($results)) {
-      return new clNodeArray();
+        if ($suffix == 'lt') {
+          $results = array_reverse(array_slice(array_reverse($results), $index));
+        }
+      
+        if ($suffix == 'first') {
+          $results = array(@$results[0]);
+        }
+      
+        if ($suffix == 'last') {
+          $results = array(@array_pop($results));
+        }
+      
+        if ($suffix == 'eq') {
+          $results = array(@$results[$val]);
+        }
+      
+        if ($suffix == 'empty') {
+          $agg = array();
+          foreach($results as $r) {
+            if (is_object($r)) {
+              if (!count($r->children()) && ((string) $r) == '') {
+                $agg[] = $r;
+              }
+            }
+          }
+          $results = $agg;
+        }
+      }
+      
+      if (!count($results)) {
+        return new clNodeArray();
+      }
     }
       
     // recursively use ::get to draw the lowest-level values
@@ -699,7 +744,7 @@ class clXmlNode extends clNode {
     $children = array();
     
     // no namespace and no name? get all.
-    if (!$ns && !$name) {
+    if (!$ns && (!$name || $name == '*')) {
       foreach($this->children as $ns => $child_sxe) {
         foreach($child_sxe as $child) {
           $children[] = new clXmlNode($child, $ns, $this->namespaces);

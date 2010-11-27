@@ -5,6 +5,17 @@
 class SelectTests extends UnitTestCase {
   
   function testSuffixes() {
+    $sel = new clSelector('element:eq(10):first');
+    $this->assertEqual(2, count($sel[0]->suffixes));
+    $this->assertTrue(isset($sel[0]->suffixes['first']));
+    $this->assertEqual("10", $sel[0]->suffixes['eq']);
+  
+    $sel = new clSelector('namespaced\:element:eq(10)');
+    $this->assertEqual('namespaced:element', $sel->element);
+    $this->assertEqual(1, count($sel->suffixes));
+    $this->assertTrue(isset($sel->suffixes['eq']));
+    $this->assertEqual("10", $sel->suffixes['eq']);
+    
     $xml = '
       <xml>
         <field color="red">red1</field>
@@ -19,9 +30,28 @@ class SelectTests extends UnitTestCase {
     
     $xml = clNode::getNodeFor($xml, 'xml');
     
+    $this->assertEqual('red1', $xml->get(':first'));
+    $this->assertEqual('barnone', $xml->get(':last'));
+    $this->assertEqual('foo bar ipsum', $xml->get('[words^="foo"]:first'));
+    $this->assertEqual('foobar ipsum', $xml->get('[words^="foo"]:last'));
+    $this->assertEqual('checked', $xml->get(':eq(3)')->get('@checked'));
+    
+    $xml = '
+      <xml>
+        <empty1 />
+        <empty2 />
+        <nonempty1>value1</nonempty1>
+        <nonempty2>value2</nonempty2>
+      </xml>
+    ';
+    
+    $xml = clNode::getNodeFor($xml, 'xml');
+    
+    $this->assertEqual(2, $xml->get(':empty')->size());
+    
   }
   
-  function testAttributeTests() {
+  function testAttributeTests() { 
     $xml = '
       <xml>
         <field color="red">red1</field>
@@ -143,17 +173,6 @@ class SelectTests extends UnitTestCase {
     $this->assertEqual("2", $sel[1]->suffixes['eq']);
     $this->assertEqual("4", $sel[2]->suffixes['eq']);
     $this->assertEqual("8", $sel[3]->suffixes['eq']);
-    
-    $sel = new clSelector('element:eq(10):first');
-    $this->assertEqual(2, count($sel[0]->suffixes));
-    $this->assertTrue(isset($sel[0]->suffixes['first']));
-    $this->assertEqual("10", $sel[0]->suffixes['eq']);
-  
-    $sel = new clSelector('namespaced\:element:eq(10)');
-    $this->assertEqual('namespaced:element', $sel->element);
-    $this->assertEqual(1, count($sel->suffixes));
-    $this->assertTrue(isset($sel->suffixes['eq']));
-    $this->assertEqual("10", $sel->suffixes['eq']);
     
     $sel = new clSelector('element[name="value"][foo!="bar"][final~="answer"]');
     $this->assertEqual('element', $sel->element);

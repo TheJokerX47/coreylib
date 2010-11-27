@@ -115,6 +115,14 @@ class XmlNodeApiTests extends UnitTestCase {
     $this->assertEqual('pets', $pets->getName());
     // aggregate dog names
     $this->assertEqual(array('Buddy', 'Lacey'), $pets->get('dogs dog@name')->toArray());
+    
+    $names = $pets->get('dogs dog@name');
+    $this->assertEqual('Buddy', $names[0]);
+    
+    $dogs = $pets->get('dogs dog');
+    $this->assertEqual('Buddy', $dogs['name']);
+    $this->assertEqual('Buddy', $dogs->get('@name'));
+    $this->assertEqual('Buddy', $pets->get('dogs dog')->get('@name'));
   }
   
 }
