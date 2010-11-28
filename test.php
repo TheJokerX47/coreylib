@@ -7,8 +7,11 @@ error_reporting(E_ALL);
 // error_reporting(E_ERROR);
 
 // build and test, or test source?
+$source = @$argv[1];
+// which test file should be run? (nothing for run all)
+$run_only = @$argv[2];
 
-if (isset($argv[1]) && $argv[1] == 'source') {
+if ($source == 'source') {
   require('src/coreylib.php');
 } else {
   // build coreylib.php
@@ -22,10 +25,12 @@ require('lib/simpletest/autorun.php');
 
 class AllTests extends TestSuite {
   function AllTests() {
+    global $source, $run_only;
+    
     parent::TestSuite();
     $dir = opendir(dirname(__FILE__).'/tests');
     while ($entry = readdir($dir)) {
-      if (preg_match('/tests\.php$/i', $entry)) {
+      if (preg_match('/tests\.php$/i', $entry) && (!$run_only || strtolower($run_only).'.php' == strtolower($entry))) {
         $this->addFile('tests/'.$entry);
       }
     }

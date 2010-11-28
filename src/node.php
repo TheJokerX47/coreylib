@@ -66,15 +66,19 @@ class clSelector implements ArrayAccess, Iterator {
     if (!self::$regex) {
       self::$regex = self::generateRegEx();
     }
-    
-    $tokenized = $this->tokenize($query);
-    if (!($selectors = preg_split(self::$sep, $tokenized))) {
-      throw new clException("Failed to parse selector query [$query].");
-    }
+
+    if ($query == '*') {
+      $selectors = array('*');
+    } else {
+      $tokenized = $this->tokenize($query);
+      if (!($selectors = preg_split(self::$sep, $tokenized))) {
+        throw new clException("Failed to parse selector query [$query].");
+      }
+    } 
     
     foreach($selectors as $sel) {
       if (!preg_match(self::$regex, $sel, $matches)) {
-        throw new clException("Failed to parse [$sel], parse of [$query].");
+        throw new clException("Failed to parse [$sel], part of query [$query].");
       }
       
       $sel = (object) array(
@@ -89,6 +93,7 @@ class clSelector implements ArrayAccess, Iterator {
         'test' => null
       );
       
+      // default element selection is "all," as in all children of current node
       if (!$sel->element && !$sel->is_attrib_getter) {
         $sel->element = '*';
       }
@@ -162,6 +167,10 @@ class clSelector implements ArrayAccess, Iterator {
     return @$sel->suffixes[$name];
   }
   
+  function index() {
+    return $this->i;
+  }
+  
   function size() {
     return count($this->selectors);
   }
@@ -212,7 +221,7 @@ class clSelector implements ArrayAccess, Iterator {
     $name = '[A-Za-z0-9\_\-]+';
     
     // element express with optional index
-    $element = "((?P<element>{$name})(\\[(?P<index>[0-9]+)\\])?)";
+    $element = "((?P<element>(\\*|{$name}))(\\[(?P<index>[0-9]+)\\])?)";
     
     // attribute expression 
     $attrib = "@(?P<attrib>{$name})";
@@ -238,21 +247,27 @@ class clSelector implements ArrayAccess, Iterator {
     // suffix selectors
     $suffixes = implode('|', array(
       // retun nth element
-      ":eq\([0-9]+\)",
+      ":eq\\([0-9]+\\)",
       // return the first element
       ":first",
       // return the last element
       ":last",
       // greater than index
-      ":gt\([0-9]+\)",
+      ":gt\\([0-9]+\\)",
       // less than index
-      ":lt\([0-9]+\)",
+      ":lt\\([0-9]+\\)",
       // even only
       ":even",
       // odd only
       ":odd",
       // empty - no children, no text
-      ":empty"
+      ":empty",
+      // parent - has children: text nodes count
+      ":parent",
+      // has - contains child element
+      ":has\\([^\\)]+\\)",
+      // text - text node in the element is
+      ":contains\\([^\\)]+\\)"
     ));
     
     $suffix_exp = "(?P<suffix>({$suffixes})+)";
@@ -355,7 +370,7 @@ class clNodeArray implements ArrayAccess, Iterator {
         return null;
       }
     } else {
-      return $this->arr[$offset];
+      return @$this->arr[$offset];
     }
   }
   
@@ -447,7 +462,7 @@ abstract class clNode implements ArrayAccess {
   
   /**
    * Retrieve some data from this Node and/or its children.
-   * @param mixed &$selector A query conforming to the coreylib selector syntax, or an instance of clSelector
+   * @param mixed $selector A query conforming to the coreylib selector syntax, or an instance of clSelector
    * @param int $limit A limit on the number of values to return
    * @param array &$results Results from the previous recursive iteration of ::get
    * @return mixed A clNodeArray or a single value, given to $selector.
@@ -481,7 +496,7 @@ abstract class clNode implements ArrayAccess {
       if (!count($results)) {
         return new clNodeArray();
       }
-    }
+    } 
     
     if ($sel->attrib) {
       if ($sel->is_expression) {
@@ -525,25 +540,20 @@ abstract class clNode implements ArrayAccess {
       foreach($sel->suffixes as $suffix => $val) { 
         if ($suffix == 'gt') {
           $results = array_slice($results, $index);
-        }
-      
-        if ($suffix == 'lt') {
+        
+        } else if ($suffix == 'lt') {
           $results = array_reverse(array_slice(array_reverse($results), $index));
-        }
       
-        if ($suffix == 'first') {
+        } else if ($suffix == 'first') {
           $results = array(@$results[0]);
-        }
       
-        if ($suffix == 'last') {
+        } else if ($suffix == 'last') {
           $results = array(@array_pop($results));
-        }
-      
-        if ($suffix == 'eq') {
+        
+        } else if ($suffix == 'eq') {
           $results = array(@$results[$val]);
-        }
-      
-        if ($suffix == 'empty') {
+
+        } else if ($suffix == 'empty') {
           $agg = array();
           foreach($results as $r) {
             if (is_object($r)) {
@@ -553,6 +563,58 @@ abstract class clNode implements ArrayAccess {
             }
           }
           $results = $agg;
+        
+        } else if ($suffix == 'parent') {
+          $agg = array();
+          foreach($results as $r) {
+            if (is_object($r)) {
+              if (((string) $r) != '' || count($r->children())) {
+                $agg[] = $r;
+              }
+            }
+          }
+          $results = $agg;
+          
+        } else if ($suffix == 'has') {
+          $agg = array();
+          foreach($results as $r) {
+            if (is_object($r)) {
+              if (count($r->children($val))) {
+                $agg[] = $r;
+              }
+            }
+          }
+          $results = $agg;
+          
+        } else if ($suffix == 'contains') {
+          $agg = array();
+          foreach($results as $r) {
+            if (is_object($r)) {
+              if (strpos((string) $r, $val) !== false) {
+                $agg[] = $r;
+              }
+            }
+          }
+          $results = $agg;
+          
+        } else if ($suffix == 'even') {
+          $agg = array();
+          foreach($results as $i => $r) {
+            if ($i % 2 === 0) {
+              $agg[] = $r;
+            }
+          }
+          $results = $agg;
+          
+        } else if ($suffix == 'odd') {
+          $agg = array();
+          foreach($results as $i => $r) {
+            if ($i % 2) {
+              $agg[] = $r;
+            }
+          }
+          $results = $agg;
+          
         }
       }
       
@@ -567,6 +629,7 @@ abstract class clNode implements ArrayAccess {
       $results = $this->get($sel, null, $results);
     }  
     
+    // limit, if requested
     if ($limit && is_array($results)) {
       $results = array_slice($results, 0, $limit);
     }
@@ -574,8 +637,23 @@ abstract class clNode implements ArrayAccess {
     return new clNodeArray($results);
   }
   
+  /**
+   * Should return either an array or a single value, given to $selector:
+   * if selector is undefined, return an array of all attributes as a 
+   * hashtable; otherwise, return the attribute's value, or if the attribute
+   * does not exist, return null.
+   * @param string $selector
+   * @param mixed array, a single value, or null
+   */
   protected abstract function attribute($selector = '');
   
+  /**
+   * Determines if the given $selectors, $tests, and $values are true.
+   * @param mixed $selectors a String or an array of strings, matching attributes by name
+   * @param mixed $tests a String or an array of strings, each a recognized comparison operator (e.g., = or != or $=)
+   * @param mixed $values a String or an array of strings, each a value to be matched according to the corresponding $test
+   * @return true when all tests are true; otherwise, false
+   */
   protected function has_attribute($selectors = '', $tests = null, $values = null) {
     // convert each parameter to an array
     if (!is_array($selectors)) {
@@ -637,10 +715,28 @@ abstract class clNode implements ArrayAccess {
     return true;
   }
   
-  protected abstract function children($selector = '');
+  /**
+   * Retrieve a list of the child elements of this node. Unless $direct is true,
+   * child elements should include ALL of the elements that appear beneath this element,
+   * flattened into a single list, and in document order. If $direct is true,
+   * only the direct descendants of this node should be returned.
+   * @param string $selector
+   * @param boolean $direct (Optional) defaults to false
+   * @return array
+   */
+   
+  protected abstract function children($selector = '', $direct = false);
   
+  /**
+   * Should respond with the value of this node, whatever that is according to
+   * the implementation. 
+   */
   abstract function __toString();
   
+  /**
+   * Initialize this node from the data represented by an arbitrary string.
+   * @param string $string
+   */
   abstract function parse($string = '');
   
 }
@@ -648,7 +744,31 @@ abstract class clNode implements ArrayAccess {
 /**
  * JSON implementation of clNode, wraps the results of json_decode.
  */
-//class clJsonNode extends clNode {}
+class clJsonNode extends clNode {
+  
+  private $obj;
+  
+  function __construct(&$json_object = null) {
+    $this->obj = $json_object;
+  }
+  
+  function parse($string = '') {
+    
+  }
+  
+  protected function children($selector = '', $direct = false) {
+    
+  }
+  
+  protected function attribute($selector = '') {
+    
+  }
+  
+  function __toString() {
+    return '';
+  }
+  
+}
 
 /**
  * XML implementation of clNode, wraps instances of SimpleXMLElement.
@@ -656,17 +776,21 @@ abstract class clNode implements ArrayAccess {
 class clXmlNode extends clNode {
   
   private $el;
-  public $parent;
   private $ns;
-  public $namespaces;
+  private $namespaces;
+  private $descendants;
+  private $attributes;
   
   /**
    * Wrap a SimpleXMLElement object.
-   * @param SimpleXMLElement $simple_xml_el
-   * @param array $namespaces (optional)
+   * @param SimpleXMLElement $simple_xml_el (optional) defaults to null
+   * @param clXmlNode $parent (optional) defaults to null
+   * @param string $ns (optional) defaults to empty string
+   * @param array $namespaces (optional) defaults to null
    */
-  function __construct(&$simple_xml_el = null, $ns = '', &$namespaces = null) {
+  function __construct(&$simple_xml_el = null, $parent = null, $ns = '', &$namespaces = null) {
     $this->el = $simple_xml_el;
+    $this->parent = $parent;
     $this->ns = $ns;
     
     if (!is_null($namespaces)) {
@@ -692,13 +816,21 @@ class clXmlNode extends clNode {
     }
   }
   
+  function namespace() {
+    return $this->ns;
+  }
+  
+  function parent() {
+    return $this->parent;
+  }
+  
   /**
    * Expose the SimpleXMLElement API.
    */
   function __call($fx_name, $args) {
     $result = call_user_func_array(array($this->el, $fx_name), $args);
     if ($result instanceof SimpleXMLElement) {
-      return new clXmlNode($result);
+      return new clXmlNode($result, $this, '', $this->namespaces);
     } else {
       return $result;
     }
@@ -710,27 +842,22 @@ class clXmlNode extends clNode {
   function __get($name) {
     $result = $this->el->{$name};
     if ($result instanceof SimpleXMLElement) {
-      return new clXmlNode($result);
+      return new clXmlNode($result, $this, '', $this->namespaces);
     } else {
       return $result;
     }
   }
   
-  private $children;
   
-  /**
-   * Retrieve children of this node named $selector. The benefit
-   * of this over SimpleXMLElement::children() is that this method
-   * is namespace agnostic, searching available children until
-   * matches are found.
-   * @param string $selector A name, e.g., "foo", or a namespace-prefixed name, e.g., "me:foo"
-   * @return array of clXmlNodes, when found; otherwise, empty array
-   */
-  protected function children($selector = '') {    
-    if (!$this->children) {
-      $this->children = array();
+  protected function children($selector = '', $direct = false) {    
+    if (!$this->descendants) {
+      $this->descendants = array();
       foreach($this->namespaces as $ns => $uri) {
-        $this->children[$ns] = &$this->el->children($ns, true);
+        foreach($this->el->children($ns, true) as $child) {
+          $node = new clXmlNode($child, $this, $ns, $this->namespaces);
+          $this->descendants[] = $node;
+          $this->descendants = array_merge($this->descendants, $node->children('*'));
+        }
       }
     }
     
@@ -743,48 +870,16 @@ class clXmlNode extends clNode {
     
     $children = array();
     
-    // no namespace and no name? get all.
-    if (!$ns && (!$name || $name == '*')) {
-      foreach($this->children as $ns => $child_sxe) {
-        foreach($child_sxe as $child) {
-          $children[] = new clXmlNode($child, $ns, $this->namespaces);
-        }
-      }
-      return $children;
-      
-    // ns specified?
-    } else if ($ns && isset($this->children[$ns])) {
-      foreach($this->children[$ns] as $child) {
-        if ($child->getName() == $name) {
-          $children[] = new clXmlNode($child, $ns);
-        }
-      }
-    
-    // looking for the name across all namespaces
-    } else {
-      foreach($this->children as $ns => $child_sxe) {
-        foreach($child_sxe as $child) {
-          if ($child->getName() == $name) {
-            $children[] = new clXmlNode($child, $ns, $this->namespaces);
-          }
-        }
+    foreach($this->descendants as $child) {
+      if ( (!$name || $name == '*' || $child->getName() == $name) && (!$direct || $child->parent() == $this) && (!$ns || $child->ns() == $ns) ) {
+        $children[] = $child;
       }
     }
     
     return $children;
   }
   
-  private $attributes;
   
-  /**
-   * Retrieve attributes of this node named $selector. The benefit
-   * of this over SimpleXMLElement::attributes() is that this method
-   * is namespace agnostic, searching available attributes until
-   * matches are found.
-   * @param string $selector A name, e.g., "foo", or a namespace-prefixed name, e.g., "me:foo"
-   * @return mixed a scalar value when $selector is defined; otherwise, an array of all attributes and values
-   *  or, when no attribute $selector is found, null
-   */
   protected function attribute($selector = '') {
     if (!$this->attributes) {
       $this->attributes = array();
@@ -842,7 +937,7 @@ class clXmlNode extends clNode {
    * @deprecated Use clXmlNode::get($selector, true) instead.
    */
   function xpath($selector) {
-    return new clXmlNode($this->el->xpath($selector));
+    return new clXmlNode($this->el->xpath($selector), $this, '', $this->namespaces);
   }
   
   function __toString() {

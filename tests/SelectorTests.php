@@ -4,6 +4,54 @@
  */
 class SelectTests extends UnitTestCase {
   
+  function testAnscestry() {
+    $xml = '
+      <xml>
+        <foo>
+          <bar>
+            <dingle />
+            <dingle />
+            <dingle />
+          </bar>
+        </foo>
+        <going>
+          <here>
+            <and>
+              <there />
+            </and>
+          </here>
+        </going>
+      </xml>
+    ';
+    
+    $xml = clNode::getNodeFor($xml, 'xml');
+    
+    $this->assertEqual(9, $xml->get('*')->size());
+    
+    $this->assertEqual(1, $xml->get('foo bar')->size());
+    
+    $this->assertEqual(3, $xml->get('foo bar')->get('*')->size());
+    
+    $xml = '
+      <html>
+        <body>
+          <div id="foo">
+            <b><a href="javascript:;">coming at yah!</a></b>
+          </div>
+          <p>
+            <b><a href="javascript:;">more where that came from!</a></b>
+          </p>
+        </body>
+      </html>
+    ';
+    
+    $xml = clNode::getNodeFor($xml, 'xml');
+    
+    $this->assertEqual(2, $xml->get('b a')->size());
+    $this->assertEqual(1, $xml->get('div a')->size());
+    $this->assertEqual(2, $xml->get('body a')->size());
+  }
+  
   function testSuffixes() {
     $sel = new clSelector('element:eq(10):first');
     $this->assertEqual(2, count($sel[0]->suffixes));
@@ -30,6 +78,10 @@ class SelectTests extends UnitTestCase {
     
     $xml = clNode::getNodeFor($xml, 'xml');
     
+    $first_a = $xml->get(':first');
+    $first_b = $xml->get('field:first');
+    $this->assertEqual($first_a, $first_b);
+    
     $this->assertEqual('red1', $xml->get(':first'));
     $this->assertEqual('barnone', $xml->get(':last'));
     $this->assertEqual('foo bar ipsum', $xml->get('[words^="foo"]:first'));
@@ -47,8 +99,38 @@ class SelectTests extends UnitTestCase {
     
     $xml = clNode::getNodeFor($xml, 'xml');
     
-    $this->assertEqual(2, $xml->get(':empty')->size());
+    $empty = $xml->get(':empty');
+    $this->assertEqual(2, $empty->size());
+    $this->assertEqual('empty1', $empty[0]->getName());
+    $this->assertEqual('empty2', $empty[1]->getName());
     
+    $parents = $xml->get(':parent');
+    $this->assertEqual(2, $parents->size());
+    $this->assertEqual('value1', $parents[0]);
+    $this->assertEqual('value2', $parents[1]);
+    
+    $xml = '
+      <xml>
+        <pets>
+          <cat age="3">Sampson</cat>
+          <dog age="5">Buddy</dog>
+        </pets>
+        <pets>
+          <cat age="8">Fluffy</cat>
+          <dog age="13">Lacey</dog>
+        </pets>
+      </xml>
+    ';
+    
+    $xml = clNode::getNodeFor($xml, 'xml');
+    
+    $pets = $xml->get(':has(dog)');
+    $this->assertEqual(2, $pets->size());
+    $this->assertEqual('Buddy', $pets[0]->get('dog'));
+    $this->assertEqual('Lacey', $pets[1]->get('dog'));
+  
+    $lacey = $xml->get(':contains(Lacey)');
+    $this->assertEqual(13, $lacey['age']);
   }
   
   function testAttributeTests() { 
