@@ -4,7 +4,7 @@
  */
 class SelectTests extends UnitTestCase {
   
-  function testAnscestry() {
+  function testDescendantAndAddFlags() {
     $xml = '
       <xml>
         <foo>
@@ -37,6 +37,7 @@ class SelectTests extends UnitTestCase {
         <body>
           <div id="foo">
             <b><a href="javascript:;">coming at yah!</a></b>
+            <a href="http://fatpandadev.com">go here</a>
           </div>
           <p>
             <b><a href="javascript:;">more where that came from!</a></b>
@@ -48,8 +49,33 @@ class SelectTests extends UnitTestCase {
     $xml = clNode::getNodeFor($xml, 'xml');
     
     $this->assertEqual(2, $xml->get('b a')->size());
-    $this->assertEqual(1, $xml->get('div a')->size());
-    $this->assertEqual(2, $xml->get('body a')->size());
+    $this->assertEqual(2, $xml->get('div a')->size());
+    $this->assertEqual(3, $xml->get('body a')->size());
+    $this->assertEqual(1, $xml->get('body > div > b > a')->size());
+    $this->assertEqual(0, $xml->get('body > a')->size());
+    $this->assertEqual(2, $xml->get('body > div a')->size());
+    $this->assertEqual('go here', $xml->get('body > div a[href^="http"]'));
+    
+    $body = $xml->get('body');
+    $this->assertEqual(1, $body->size());
+    $this->assertEqual(2, $body->children()->size());
+    $this->assertEqual(1, $body->children('div')->size());
+
+    $group = $xml->get('body')->add('div')->add('a');
+    $this->assertEqual(5, $group->size());
+    $this->assertEqual('body', $group[0]->getName());
+    $this->assertEqual('div', $group[1]->getName());
+    $this->assertEqual('a', $group[2]->getName());
+    $this->assertEqual('a', $group[3]->getName());
+    $this->assertEqual('a', $group[4]->getName());
+    
+    $group = $xml->get('body, div, a');
+    $this->assertEqual(5, $group->size());
+    $this->assertEqual('body', $group[0]->getName());
+    $this->assertEqual('div', $group[1]->getName());
+    $this->assertEqual('a', $group[2]->getName());
+    $this->assertEqual('a', $group[3]->getName());
+    $this->assertEqual('a', $group[4]->getName());
   }
   
   function testSuffixes() {

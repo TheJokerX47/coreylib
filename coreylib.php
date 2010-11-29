@@ -1950,32 +1950,7 @@ class clSelector implements ArrayAccess, Iterator {
   
   private $tokens;
   
-  private function tokenize($string) {
-    $tokenized = false;
-    foreach(self::$tokenize as $t) {
-      while(($at = strpos($string, "\\$t")) !== false) {
-        $tokenized = true;
-        $token = "TKS".count($this->tokens)."TKE";
-        $this->tokens[] = $t;
-        $string = substr($string, 0, $at).$token.substr($string, $at+2);
-      }
-    }
-    return $tokenized ? 'TK'.$string : $string;
-  }
-  
-  private function untokenize($string) {
-    if (!$string || strpos($string, 'TK') !== 0) {
-      return $string;
-    } else {
-      foreach($this->tokens as $i => $t) {
-        $token = "TKS{$i}TKE";
-        $string = preg_replace("/{$token}/", $t, $string);
-      }
-      return substr($string, 2);
-    }
-  }
-  
-  function __construct($query) {
+  function __construct($query, $direct = null) {
     if (!self::$regex) {
       self::$regex = self::generateRegEx();
     }
@@ -2003,7 +1978,8 @@ class clSelector implements ArrayAccess, Iterator {
         'attrib' => null,
         'value' => null,
         'suffixes' => null,
-        'test' => null
+        'test' => null,
+        'direct_descendants' => (!is_null($direct)) ? $direct : false
       );
       
       // default element selection is "all," as in all children of current node
@@ -2067,6 +2043,31 @@ class clSelector implements ArrayAccess, Iterator {
       }
       
       $this->selectors[] = $sel;
+    }
+  }
+  
+  private function tokenize($string) {
+    $tokenized = false;
+    foreach(self::$tokenize as $t) {
+      while(($at = strpos($string, "\\$t")) !== false) {
+        $tokenized = true;
+        $token = "TKS".count($this->tokens)."TKE";
+        $this->tokens[] = $t;
+        $string = substr($string, 0, $at).$token.substr($string, $at+2);
+      }
+    }
+    return $tokenized ? 'TK'.$string : $string;
+  }
+  
+  private function untokenize($string) {
+    if (!$string || strpos($string, 'TK') !== 0) {
+      return $string;
+    } else {
+      foreach($this->tokens as $i => $t) {
+        $token = "TKS{$i}TKE";
+        $string = preg_replace("/{$token}/", $t, $string);
+      }
+      return substr($string, 2);
     }
   }
   
@@ -2233,13 +2234,21 @@ class clNodeArray implements ArrayAccess, Iterator {
     return count($this->arr);
   }
   
-  function children() {
-    $children = array();
-    foreach($this->arr as $node) {
-      if (is_object($node)) {
-        $children = array_merge($children, $node->children());
-      }
+  /**
+   * Run a selector query on the direct descendants of these nodes.
+   */
+  function children($selector = '') {
+    $sel = $selector;
+    if (!is_object($sel)) {
+      $sel = new clSelector($sel, true);
     }
+    
+    $children = array();
+    foreach($this->$arr as $node) {
+      $children = array_merge($children, $node->get($sel));
+      $sel->rewind();
+    }
+    
     return new clNodeArray($children);
   }
   
@@ -2638,7 +2647,7 @@ abstract class clNode implements ArrayAccess {
    * @return array
    */
    
-  protected abstract function children($selector = '', $direct = false);
+  protected abstract function descendants($selector = '', $direct = false);
   
   /**
    * Should respond with the value of this node, whatever that is according to
@@ -2669,7 +2678,7 @@ class clJsonNode extends clNode {
     
   }
   
-  protected function children($selector = '', $direct = false) {
+  protected function descendants($selector = '', $direct = false) {
     
   }
   
@@ -2762,14 +2771,14 @@ class clXmlNode extends clNode {
   }
   
   
-  protected function children($selector = '', $direct = false) {    
+  protected function descendants($selector = '', $direct = false) {    
     if (!$this->descendants) {
       $this->descendants = array();
       foreach($this->namespaces as $ns => $uri) {
         foreach($this->el->children($ns, true) as $child) {
           $node = new clXmlNode($child, $this, $ns, $this->namespaces);
           $this->descendants[] = $node;
-          $this->descendants = array_merge($this->descendants, $node->children('*'));
+          $this->descendants = array_merge($this->descendants, $node->descendants('*'));
         }
       }
     }
@@ -2784,7 +2793,7 @@ class clXmlNode extends clNode {
     $children = array();
     
     foreach($this->descendants as $child) {
-      if ( (!$name || $name == '*' || $child->getName() == $name) && (!$direct || $child->parent() == $this) && (!$ns || $child->ns() == $ns) ) {
+      if ( (!$name || $name == '*' || $child->getName() == $name) && (!$direct || $child->parent() === $this) && (!$ns || $child->ns() == $ns) ) {
         $children[] = $child;
       }
     }
