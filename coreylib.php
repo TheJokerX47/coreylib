@@ -1936,8 +1936,6 @@ endif;
  */
 class clSelector implements ArrayAccess, Iterator {
   
-  static $sep = "#(\s+|/)#";
-  
   static $regex;
   
   static $attrib_exp;
@@ -1955,94 +1953,135 @@ class clSelector implements ArrayAccess, Iterator {
       self::$regex = self::generateRegEx();
     }
 
-    if ($query == '*') {
-      $selectors = array('*');
-    } else {
-      $tokenized = $this->tokenize($query);
-      if (!($selectors = preg_split(self::$sep, $tokenized))) {
-        throw new clException("Failed to parse selector query [$query].");
-      }
-    } 
+    $tokenized = $this->tokenize($query);
     
-    foreach($selectors as $sel) {
-      if (!preg_match(self::$regex, $sel, $matches)) {
-        throw new clException("Failed to parse [$sel], part of query [$query].");
+    $buffer = '';
+    $eos = false;
+    $eoq = false;
+    $direct_descendant_flag = false;
+    $add_flag = false;
+    
+    // loop over the tokenized query
+    for ($c = 0; $c<strlen($tokenized); $c++) {
+      // is this the end of the query?
+      $eoq = ($c == strlen($tokenized)-1);
+      
+      // get the current character
+      $char = $tokenized{$c};
+      
+      // note descendants-only rule
+      if ($char == '>') {
+        $direct_descendant_flag = true;
       }
       
-      $sel = (object) array(
-        'element' => $this->untokenize(@$matches['element']),
-        'is_expression' => ($this->untokenize(@$matches['attrib_exp']) != false),
-        // in coreylib v1, passing "@attributeName" retrieved a scalar value;
-        'is_attrib_getter' => preg_match('/^@.*$/', $query),
-        // defaults for these:
-        'attrib' => null,
-        'value' => null,
-        'suffixes' => null,
-        'test' => null,
-        'direct_descendants' => (!is_null($direct)) ? $direct : false
-      );
-      
-      // default element selection is "all," as in all children of current node
-      if (!$sel->element && !$sel->is_attrib_getter) {
-        $sel->element = '*';
+      // note add-selector-result rule
+      else if ($char == ',') {
+        $add_flag = true;
+        $eos = true;
       }
       
-      if ($exp = @$matches['attrib_exp']) {
-        // multiple expressions?
-        if (strpos($exp, '][') !== false) {
-          $attribs = array();
-          $values = array();
-          $tests = array();
-          
-          $exps = explode('][', substr($exp, 1, strlen($exp)-2));
-          foreach($exps as $exp) {
-            if (preg_match('#'.self::$attrib_exp.'#', "[{$exp}]", $matches)) {
-              $attribs[] = $matches['attrib_exp_name'];
-              $tests[] = $matches['test'];
-              $values[] = $matches['value'];
+      // is the character a separator?
+      else if ($char == '/' || $char == "\t" || $char == "\n" || $char == "\r" || $char == ' ') {
+        // end of selector reached
+        $eos = strlen($buffer) && true;
+      }
+      
+      else {
+        $buffer .= $char;
+      }
+      
+      if (strlen($buffer) && ($eoq || $eos)) {
+        
+        $sel = trim($buffer);
+        
+        // reset the buffer
+        $buffer = '';
+        $eos = false;
+        
+        // process and clear buffer
+        if (!preg_match(self::$regex, $sel, $matches)) {
+          throw new clException("Failed to parse [$sel], part of query [$query].");
+        }
+
+        $sel = (object) array(
+          'element' => $this->untokenize(@$matches['element']),
+          'is_expression' => ($this->untokenize(@$matches['attrib_exp']) != false),
+          // in coreylib v1, passing "@attributeName" retrieved a scalar value;
+          'is_attrib_getter' => preg_match('/^@.*$/', $query),
+          // defaults for these:
+          'attrib' => null,
+          'value' => null,
+          'suffixes' => null,
+          'test' => null,
+          'direct_descendant_flag' => $direct_descendant_flag || ((!is_null($direct)) ? $direct : false),
+          'add_flag' => $add_flag
+        );
+        
+        $direct_descendant_flag = false;
+        $add_flag = false;
+
+        // default element selection is "all," as in all children of current node
+        if (!$sel->element && !$sel->is_attrib_getter) {
+          $sel->element = '*';
+        }
+
+        if ($exp = @$matches['attrib_exp']) {
+          // multiple expressions?
+          if (strpos($exp, '][') !== false) {
+            $attribs = array();
+            $values = array();
+            $tests = array();
+
+            $exps = explode('][', substr($exp, 1, strlen($exp)-2));
+            foreach($exps as $exp) {
+              if (preg_match('#'.self::$attrib_exp.'#', "[{$exp}]", $matches)) {
+                $attribs[] = $matches['attrib_exp_name'];
+                $tests[] = $matches['test'];
+                $values[] = $matches['value'];
+              }
             }
-          }
-          
-          $sel->attrib = $attribs;
-          $sel->value = $values;
-          $sel->test = $tests;
-        // just one expression
-        } else {
-          $sel->attrib = array($this->untokenize(@$matches['attrib_exp_name']));
-          $sel->value = array($this->untokenize(@$matches['value']));
-          $sel->test = array(@$matches['test']);
-        }
-      // no expression
-      } else {
-        $sel->attrib = $this->untokenize(@$matches['attrib']);
-      }
-      
-      if ($suffixes = @$matches['suffix']) {
-        $all = array_filter(explode(':', $suffixes));
-        $suffixes = array();
-        
-        foreach($all as $suffix) {
-          $open = strpos($suffix, '(');
-          $close = strrpos($suffix, ')');
-          if ($open !== false && $close !== false) {
-            $label = substr($suffix, 0, $open);
-            $val = $this->untokenize(substr($suffix, $open+1, $close-$open-1));
+
+            $sel->attrib = $attribs;
+            $sel->value = $values;
+            $sel->test = $tests;
+          // just one expression
           } else {
-            $label = $suffix;
-            $val = true;
+            $sel->attrib = array($this->untokenize(@$matches['attrib_exp_name']));
+            $sel->value = array($this->untokenize(@$matches['value']));
+            $sel->test = array(@$matches['test']);
           }
-          $suffixes[$label] = $val;
+        // no expression
+        } else {
+          $sel->attrib = $this->untokenize(@$matches['attrib']);
         }
-        
-        $sel->suffixes = $suffixes;
+
+        if ($suffixes = @$matches['suffix']) {
+          $all = array_filter(explode(':', $suffixes));
+          $suffixes = array();
+
+          foreach($all as $suffix) {
+            $open = strpos($suffix, '(');
+            $close = strrpos($suffix, ')');
+            if ($open !== false && $close !== false) {
+              $label = substr($suffix, 0, $open);
+              $val = $this->untokenize(substr($suffix, $open+1, $close-$open-1));
+            } else {
+              $label = $suffix;
+              $val = true;
+            }
+            $suffixes[$label] = $val;
+          }
+
+          $sel->suffixes = $suffixes;
+        }
+
+        // alias for eq(), and backwards compat with coreylib v1
+        if (!isset($sel->suffixes['eq']) && ($index = @$matches['index'])) {
+          $sel->suffixes['eq'] = $index;
+        }
+
+        $this->selectors[] = $sel;
       }
-      
-      // alias for eq(), and backwards compat with coreylib v1
-      if (!isset($sel->suffixes['eq']) && ($index = @$matches['index'])) {
-        $sel->suffixes['eq'] = $index;
-      }
-      
-      $this->selectors[] = $sel;
     }
   }
   
@@ -2072,7 +2111,7 @@ class clSelector implements ArrayAccess, Iterator {
   }
   
   function __get($name) {
-    $sel = $this->selectors[$this->i];
+    $sel = @$this->selectors[$this->i];
     return $sel->{$name};
   }
   
@@ -2199,8 +2238,11 @@ class clNodeArray implements ArrayAccess, Iterator {
   
   private $arr = array();
   private $i;
+  private $root;
   
-  function __construct($arr = null) {
+  function __construct($arr = null, $root = null) {
+    $this->root = $root;
+    
     if (!is_null($arr)) {
       if ($arr instanceof clNodeArray) {
         $this->arr = $arr->toArray();
@@ -2236,21 +2278,33 @@ class clNodeArray implements ArrayAccess, Iterator {
   
   /**
    * Run a selector query on the direct descendants of these nodes.
+   * @return new clNodeArray containing direct descendants
    */
-  function children($selector = '') {
+  function children($selector = '*') {
     $sel = $selector;
     if (!is_object($sel)) {
       $sel = new clSelector($sel, true);
     }
     
     $children = array();
-    foreach($this->$arr as $node) {
-      $children = array_merge($children, $node->get($sel));
+    foreach($this->arr as $node) {
+      $children = array_merge($children, $node->get($sel)->toArray());
       $sel->rewind();
     }
     
-    return new clNodeArray($children);
+    return new clNodeArray($children, $this->root);
   }
+  
+  /**
+   * Requery the root, and append the results to the stored array.
+   * @return Reference to this clNodeArray (supports method chaining)
+   */
+  function add($selector = '*') {
+    $this->arr = array_merge($this->arr, $this->root->get($selector)->toArray());    
+    return $this;
+  }
+  
+  
   
   function current() {
     return $this->arr[$this->i];
@@ -2396,7 +2450,7 @@ abstract class clNode implements ArrayAccess {
       $sel = new clSelector($sel);
       if (!$sel->valid()) {
         // nothing to process
-        return new clNodeArray();
+        return new clNodeArray(null, $this);
       }
     }
     
@@ -2410,13 +2464,13 @@ abstract class clNode implements ArrayAccess {
       $agg = array();
       foreach($results as $child) {
         if (is_object($child)) {
-          $agg = array_merge($agg, $child->children($sel->element));
+          $agg = array_merge($agg, $child->descendants($sel->element, $sel->direct_descendant_flag));
         }
       }
       $results = $agg;
       
       if (!count($results)) {
-        return new clNodeArray();
+        return new clNodeArray(null, $this);
       }
     } 
     
@@ -2454,7 +2508,7 @@ abstract class clNode implements ArrayAccess {
       }
       
       if (!count($results)) {
-        return new clNodeArray();
+        return new clNodeArray(null, $this);
       }
     }
     
@@ -2479,7 +2533,7 @@ abstract class clNode implements ArrayAccess {
           $agg = array();
           foreach($results as $r) {
             if (is_object($r)) {
-              if (!count($r->children()) && ((string) $r) == '') {
+              if (!count($r->descendants()) && ((string) $r) == '') {
                 $agg[] = $r;
               }
             }
@@ -2490,7 +2544,7 @@ abstract class clNode implements ArrayAccess {
           $agg = array();
           foreach($results as $r) {
             if (is_object($r)) {
-              if (((string) $r) != '' || count($r->children())) {
+              if (((string) $r) != '' || count($r->descendants())) {
                 $agg[] = $r;
               }
             }
@@ -2501,7 +2555,7 @@ abstract class clNode implements ArrayAccess {
           $agg = array();
           foreach($results as $r) {
             if (is_object($r)) {
-              if (count($r->children($val))) {
+              if (count($r->descendants($val))) {
                 $agg[] = $r;
               }
             }
@@ -2541,22 +2595,31 @@ abstract class clNode implements ArrayAccess {
       }
       
       if (!count($results)) {
-        return new clNodeArray();
+        return new clNodeArray(null, $this);
       }
     }
       
-    // recursively use ::get to draw the lowest-level values
-    $sel->next();
-    if ($sel->valid()) {
-      $results = $this->get($sel, null, $results);
-    }  
+    
+    // append the results of the next selector?
+    if ($sel->add_flag) {
+      $sel->next();
+      if ($sel->valid()) {
+        $results = array_merge($results, $this->get($sel, null)->toArray());
+      }
+    } else {
+      // recursively use ::get to draw the lowest-level values
+      $sel->next();
+      if ($sel->valid()) {
+        $results = $this->get($sel, null, $results);
+      }  
+    }
     
     // limit, if requested
     if ($limit && is_array($results)) {
       $results = array_slice($results, 0, $limit);
     }
     
-    return new clNodeArray($results);
+    return new clNodeArray($results, $this);
   }
   
   /**
@@ -2675,7 +2738,16 @@ class clJsonNode extends clNode {
   }
   
   function parse($string = '') {
-    
+    if (($json_object = json_decode($string)) === false) {
+      throw new Exception("Failed to parse string as JSON.");
+    } else {
+      if (is_array($json_object)) {
+        $children = self::flatten_array($json_object);
+        $this->obj = (object) $children;
+      } else {
+        $this->obj = $json_object;
+      }
+    }
   }
   
   protected function descendants($selector = '', $direct = false) {

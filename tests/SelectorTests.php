@@ -66,7 +66,7 @@ class SelectTests extends UnitTestCase {
     $this->assertEqual('body', $group[0]->getName());
     $this->assertEqual('div', $group[1]->getName());
     $this->assertEqual('a', $group[2]->getName());
-    $this->assertEqual('a', $group[3]->getName());
+    $this->assertEqual('a', $group[3]->getName());  
     $this->assertEqual('a', $group[4]->getName());
     
     $group = $xml->get('body, div, a');

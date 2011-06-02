@@ -391,6 +391,8 @@ class clNodeArray implements ArrayAccess, Iterator {
     return $this;
   }
   
+  
+  
   function current() {
     return $this->arr[$this->i];
   }
@@ -823,7 +825,16 @@ class clJsonNode extends clNode {
   }
   
   function parse($string = '') {
-    
+    if (($json_object = json_decode($string)) === false) {
+      throw new Exception("Failed to parse string as JSON.");
+    } else {
+      if (is_array($json_object)) {
+        $children = self::flatten_array($json_object);
+        $this->obj = (object) $children;
+      } else {
+        $this->obj = $json_object;
+      }
+    }
   }
   
   protected function descendants($selector = '', $direct = false) {
