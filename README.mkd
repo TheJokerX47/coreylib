@@ -31,7 +31,7 @@ You can also [write your own caching implementation](#), but only if you wanna.
 
 ##Step 1: Get the library
 
-To download coreylib, click the *Download Source* button at the top of the [coreylib GitHub project page](http://github.com/collegeman/coreylib).
+[Download](https://github.com/collegeman/coreylib/zipball/master) coreylib from the [coreylib GitHub project page](http://github.com/collegeman/coreylib).
 
 ##Step 2: Add coreylib to your project
 
