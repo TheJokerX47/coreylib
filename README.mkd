@@ -122,8 +122,8 @@ Once you've figured out how to navigate the webs of your dataset, it's time to g
 
     <ul>
       <?php if ($feed = $api->get('http://feeds.feedburner.com/github')) { ?>
-        <?php foreach($feed->get('entry') as $post) { ?>
-          <li><a href="<?php echo $post->get('link@href') ?>"><?php echo $post->get('title') ?></a></li>
+        <?php foreach($feed->get('entry') as $entry) { ?>
+          <li><a href="<?php echo $entry->get('link@href') ?>"><?php echo $entry->get('title') ?></a></li>
         <?php } ?>
       <?php } ?>
     </ul>
