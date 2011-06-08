@@ -5,7 +5,7 @@
 class JsonNodeApiTests extends UnitTestCase {
   
   /**
-   * Make sure my understanding json_decode is spot-on
+   * Make sure my understanding of json_decode is spot-on
    */
   function testJsonDecode() {
     

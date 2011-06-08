@@ -1,24 +1,5 @@
 <?php
 /**
- * coreylib - Standard API for navigating data: XML and JSON
- * Copyright (C)2008-2010 Fat Panda LLC.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA. 
- */
-
-/**
  * Parser for jQuery-inspired selector syntax.
  */
 class clSelector implements ArrayAccess, Iterator {
@@ -391,8 +372,6 @@ class clNodeArray implements ArrayAccess, Iterator {
     return $this;
   }
   
-  
-  
   function current() {
     return $this->arr[$this->i];
   }
@@ -468,7 +447,7 @@ abstract class clNode implements ArrayAccess {
    * @param string $type The type - supported include "xml" and "json"
    * @return clNode implementation 
    */
-  function getNodeFor($string, $type) {
+  static function getNodeFor($string, $type) {
     if ($type == 'xml') {
       $node = new clXmlNode();
     } else if ($type == 'json') {
@@ -499,6 +478,56 @@ abstract class clNode implements ArrayAccess {
   
   function offsetUnset($offset) {
     throw new clException("clNode objects are read-only.");
+  }
+  
+  /**
+   * @return array key/value pairs for all of the attributes in this node
+   */
+  function &attribs() {
+    $attribs = array();
+    foreach($this->attribute() as $name => $value) {
+      $attribs[$name] = $value;
+    }
+    return $attribs;
+  }
+  
+  /**
+   * @return array A representation of the data available in this node
+   * and its children, suitable for exploring with print_r
+   * @see http://php.net/manual/en/function.print-r.php
+   */
+  function &toArray() {
+    $list = array();
+    
+    foreach($this->descendants('', true) as $child) {
+      $name = $child->name();
+      if (isset($list[$name])) {
+        if (!is_array($list[$name])) {
+          $list[$name] = array($list[$name]);
+        }
+        $list[$name][] = (object) array(
+          'text' => trim($child->__toString()),
+          'children' => $child->toArray(),
+          'attribs' => $child->attribs()
+        );
+      } else {
+        $list[$name] = (object) array(
+          'text' => trim($child->__toString()),
+          'children' => $child->toArray(),
+          'attribs' => $child->attribs()
+        );
+      }
+    }
+    
+    return $list;
+  }
+  
+  /** 
+   * @return JSON-encoded representation of the data available in this node
+   * and its children.
+   */
+  function toJson() {
+    return json_encode($this->toArray());
   }
   
   /**
@@ -720,6 +749,12 @@ abstract class clNode implements ArrayAccess {
   protected abstract function attribute($selector = '');
   
   /**
+   * Should return a string value representing the name of this node.
+   * @return string
+   */
+  abstract function name();
+   
+  /**
    * Determines if the given $selectors, $tests, and $values are true.
    * @param mixed $selectors a String or an array of strings, matching attributes by name
    * @param mixed $tests a String or an array of strings, each a recognized comparison operator (e.g., = or != or $=)
@@ -843,6 +878,10 @@ class clJsonNode extends clNode {
   
   protected function attribute($selector = '') {
     
+  }
+  
+  function name() {
+    return '';
   }
   
   function __toString() {
@@ -1011,6 +1050,10 @@ class clXmlNode extends clNode {
     return null;
   }
   
+  function name() {
+    return $this->getName();
+  }
+  
   /**
    * Use XPATH to select elements. But... why? Ugh.
    * @param 
@@ -1023,10 +1066,6 @@ class clXmlNode extends clNode {
   
   function __toString() {
     return (string) $this->el;
-  }
-  
-  function info() {
-    
   }
   
 }
