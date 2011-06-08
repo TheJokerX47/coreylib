@@ -1,6 +1,4 @@
-#Getting Started 
-
-##What is coreylib?
+#What's a coreylib?
 
 coreylib is a small PHP library for downloading, caching, and searching XML and JSON.
 
@@ -12,9 +10,9 @@ Basically, you give coreylib a URL, and you get back an object that you can use 
 
 Did we mention you get to use [jQuery-style CSS selectors](#) to extract the content you want?
 
-##Value-add:
+#Value-add:
 
-##Requirements
+#Requirements
 
 PHP 5.2+ with the [Client URL (cURL) Library](http://www.php.net/manual/en/curl.installation.php),  [SimpleXML](http://www.php.net/manual/en/book.simplexml.php) and/or [JSON](http://www.php.net/manual/en/book.json.php)
 extensions installed and enabled.
@@ -31,13 +29,13 @@ Memcached is definitely the way to go, if you can swing it. Running Ubuntu?
     
 You can also [write your own caching implementation](#), but only if you wanna.
 
-##Getting started
+#Getting started
 
-###Step 1: Get the library
+##Step 1: Get the library
 
 To download coreylib, click the *Download Source* button at the top of the [coreylib GitHub project page](http://github.com/collegeman/coreylib).
 
-###Step 2: Add coreylib to your project
+##Step 2: Add coreylib to your project
 
 Adding coreylib to your PHP project is as easy as including the library into your code.
 
@@ -52,7 +50,7 @@ If you're using coreylib with WordPress, you have a couple of options.
 
 2. Drop it in the plugins folder, and activate it from the plugins menu.
 
-###Step 3: Get some data
+##Step 3: Get some data
 
 The easiest place to start is with a familiar stream/schema of data, like RSS or Atom. The GitHub blog should be good for that.
 
@@ -63,7 +61,7 @@ The easiest place to start is with a familiar stream/schema of data, like RSS or
       // something went wrong
     }
     
-##The coreylib story
+#The coreylib story
 
 So, this dude [coreyweb](http://about.me/coreyweb) has a [personal website](http://coreyweb.com). He coded it all by himself using PHP, and he was very proud. Then one day he got it in his head to make his page more dynamic, with streams from *Twitter*, and *Flickr*, and *RSS* from his favorite blogs.
 
@@ -75,7 +73,9 @@ So coreyweb reached out to this other dude named [collegeman](http://www.faceboo
 
 Thus, with little fuss, coreylib was born. And now you can use it in your projects for free.
 
-##Contributing to coreylib
+#Contributing to coreylib
+
+Yes, please.
 
 coreylib is an open source project licensed under the terms of the GNU GPL v2. You can use it in your own applications, modify it if you need to, but you must release your source code when you distribute coreylib as part of another application.
 
