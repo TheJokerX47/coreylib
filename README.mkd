@@ -85,17 +85,35 @@ The console output is structured like this:
               author ->
                 children ->
                   name ->
+                    // the textual content of the <name> tag
                     text -> 'rtomayko'
           1 ->
             ...
         )
       )
       
-The structure illustrates the relationships between all of the pieces of information, and should help you to construct **selectors**,
+This output illustrates the relationships between all of the pieces of information, and should help you to construct **selectors**,
 which is how you will tell coreylib what data you want to read/manipulate.
 
 Alternative to `$feed->inspect()`, you can point your browser directly to the `coreylib.php` script, which will enable you
-to use the javascript console to run new coreylib queries ([watch](http://screencast.com/t/blwIMF0wXa)).
+to use the javascript console to run new coreylib queries. Just make sure first to set the `COREYLIB_DEBUG` constant to `true` (and don't forget to switch it off again before pushing into production).
+    
+Once the page has loaded, open the javascript console, and type this:
+
+    coreylib('http://feeds.feedburner.com/github');
+    
+You should see:
+
+    "Downloading..."
+    > Object
+    
+Pretty much the same result as before. Except now, you can run queries on other URLs quickly and easily, and filter them too:
+
+    coreylib('http://feeds.feedburner.com/github', 'entry:eq(2)');
+    > Object
+      entry ->
+        children ->
+          ...
     
 #The coreylib story
 
