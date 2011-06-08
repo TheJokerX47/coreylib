@@ -122,12 +122,16 @@ Pretty much the same result as before. Except now, you can run queries on other 
 Once you've figured out how to navigate the webs of your dataset, it's time to go back to PHP, and do something with the content!
 
     <ul>
-      <?php if ($feed = $api->get('http://feeds.feedburner.com/github')) { ?>
+      <?php if ($feed = coreylib('http://feeds.feedburner.com/github')) { ?>
         <?php foreach($feed->get('entry') as $entry) { ?>
           <li><a href="<?php echo $entry->get('link@href') ?>"><?php echo $entry->get('title') ?></a></li>
         <?php } ?>
       <?php } ?>
     </ul>
+    
+You may have noticed by now that I keep switching back and forth between some object class `clApi` and the function I used above, `coreylib()`. `cliApi` is what you want to use when you want more finely-grained control over error handling and such.
+
+The complete coreylib API is documented in the [wiki](#) (coming soon!).
     
 #The coreylib story
 
