@@ -10,9 +10,7 @@ preg_match_all('/require\(\'(.*)\'\);/', $make, $matches);
 
 ob_start();
 
-echo "<?php\n";
-
-echo "
+echo "<?php
 /**
  * coreylib
  * Parse and cache XML and JSON.

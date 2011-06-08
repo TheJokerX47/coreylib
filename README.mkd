@@ -61,6 +61,14 @@ The easiest place to start is with a familiar stream/schema of data, like RSS or
       // something went wrong
     }
     
+##Step 4: Inspect your data
+
+With data in hand, you can use the handy-dandy javascript debugging console in your browser to explore the data's structure:
+
+    if ($feed = $api->parse()) {
+      $feed->inspect();
+    }
+    
 #The coreylib story
 
 So, this dude [coreyweb](http://about.me/coreyweb) has a [personal website](http://coreyweb.com). He coded it all by himself using PHP, and he was very proud. Then one day he got it in his head to make his page more dynamic, with streams from *Twitter*, and *Flickr*, and *RSS* from his favorite blogs.
