@@ -80,11 +80,28 @@ class clApi {
    * Download and parse the data from the specified endpoint using an HTTP GET.
    * @param mixed $cache_for An expression of time (e.g., 10 minutes), or 0 to cache forever, or FALSE to flush the cache, or -1 to skip over all caching (the default)
    * @param string One of clApi::METHOD_GET or clApi::METHOD_POST, or null
-   * @return bool TRUE if parsing succeeds; otherwise FALSE.
+   * @param string (optional) Force the node type, ignoring content type signals and auto-detection
+   * @return clNode if parsing succeeds; otherwise FALSE.
    * @see http://php.net/manual/en/function.strtotime.php
    */
-  function parse($cache_for = -1, $override_method = null) {
-    
+  function &parse($cache_for = -1, $override_method = null, $node_type = null) {
+    $node = false;
+    $download = $this->download(false, $cache_for, $override_method);
+      
+    // if the download succeeded
+    if ($download->is2__()) {
+      if ($node_type) {
+        $node = clNode::getNodeFor($download->getContent(), $node_type);
+      } else if ($download->isXml()) {
+        $node = clNode::getNodeFor($download->getContent(), 'xml');
+      } else if ($download->isJson()) {
+        $node = clNode::getNodeFor($download->getContent(), 'json');
+      } else {
+        throw new clException("Unable to determine content type. You can force a particular type by passing a third argument to clApi->parse(\$cache_for = -1, \$override_method = null, \$node_type = null).");
+      }
+    } 
+      
+    return $node;
   }
   
   /**
@@ -121,10 +138,6 @@ class clApi {
     } else {
       return @self::$options[$option];
     }
-  }
-  
-  function info() {
-    
   }
   
   /**
@@ -207,9 +220,9 @@ class clApi {
     $this->ch = curl_init($url);
     
     // authenticate?
-    if ($this->username) {
+    if ($this->user) {
       curl_setopt($this->ch, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
-      curl_setopt($this->ch, CURLOPT_USERPWD, "$this->username:$this->password");
+      curl_setopt($this->ch, CURLOPT_USERPWD, "$this->user:$this->pas");
     }
     
     // set headers
@@ -236,7 +249,7 @@ class clApi {
     }
     
     if ($queue) {
-      return new clDownload($this->ch, null);
+      $download = clDownload($this->ch, null);
     } else {
       $content = curl_exec($this->ch);
       $download = new clDownload($this->ch, $content);
@@ -245,9 +258,9 @@ class clApi {
       if ($download->is2__()) {
         $this->cacheSet($cache_key, $cache_for, $download);
       }
-      
-      return $download;
     }
+    
+    return $download;
   }
   
   function cacheWith($clCache) {
@@ -296,29 +309,14 @@ class clApi {
     return $msg;
   }
   
-  /**
-   * Provide access to the wrapped SimpleXML object.
-   */
-  function __get($prop_name) {
-    
-  }
-  
-  /**
-   * Provide help to users of older versions.
-   */
-  function __call($fx_name, $args) {
-    
-    
-  }
-  
 }
 
 if (!function_exists('coreylib')):
   function coreylib($url, $cache_for = -1, $params = array(), $method = clApi::METHOD_GET) {
     $api = new clApi($url);
     $api->param($params);
-    if ($api->parse($cache_for, $method)) {
-      return $api;
+    if ($node = $api->parse($cache_for, $method)) {
+      return $node;
     } else {
       return false;
     }
@@ -329,43 +327,86 @@ class clDownload {
   
   private $content;
   private $ch;
+  private $info;
   
   function __construct(&$ch = null, $content = null) {
     $this->ch = $ch;
+    $this->info = curl_getinfo($this->ch);
     $this->content = $content;
+  }
+  
+  function __sleep() {
+    return array('info', 'content');
   }
  
   function getContent() {
     return $this->content;
   }
   
+  function hasContent() {
+    return (bool) strlen(trim($this->content));
+  }
+  
   function getCurl() {
     return $this->ch;
   }
   
-  function isXml() {
-    
+  function getInfo() {
+    return $this->info;
   }
   
+  private static $xmlContentTypes = array(
+    'text/xml',
+    'application/rss\+xml',
+    'xml'
+  );
+  
+  function isXml() {
+    if (preg_match(sprintf('#(%s)#i', implode('|', self::$xmlContentTypes)), $this->info['content_type'])) {
+      return true;
+    } else if (stripos('<?xml', trim($this->content)) === 0) {
+      return true;
+    } else {
+      return false;
+    }
+  }
+  
+  private static $jsonContentTypes = array(
+    'text/javascript',
+    'application/x-javascript',
+    'application/json',
+    'text/x-javascript',
+    'text/x-json',
+    '.*json.*'
+  );
+  
   function isJson() {
-    
+    if (preg_match(sprintf('#(%s)#i', implode('|', self::$jsonContentTypes)), $this->info['content_type'])) {
+      return true;
+    } else if (substr(trim($this->content), 0) === '{' && substr(trim($this->content), -1) === '}') {
+      return true;
+    } else if (substr(trim($this->content), 0) === '[' && substr(trim($this->content), -1) === ']') {
+      return true;
+    } else {
+      return false;
+    }
   }
   
   function __call($name, $args) {
     if (preg_match('/^is(\d+)(_)?(_)?$/', $name, $matches)) {
-      $status = curl_getinfo($this->ch, CURLINFO_HTTP_CODE);
+      $status = $this->info['http_code'];
       
       if (!$status) {
         return false;
       }
       
       $http_status_code = $matches[1];
-      $any_ten = (bool) @$matches[2];
-      $any_one = (bool) @$matches[3];
+      $any_ten = @$matches[2];
+      $any_one = @$matches[3];
       
       if ($any_ten || $any_one) {
-        for($ten = 0; $ten <= $any_ten ? 0 : 90; $ten+=10) {
-          for($one = 0; $one <= $any_ten || $any_one ? 0 : 9; $one++) {
+        for($ten = 0; $ten <= ($any_ten ? 0 : 90); $ten+=10) {
+          for($one = 0; $one <= (($any_ten || $any_one) ? 0 : 9); $one++) {
             $code = $http_status_code . ($ten == 0 ? '0' : '') . ($ten + $one);
             if ($code == $status) {
               return true;
