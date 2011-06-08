@@ -59,7 +59,7 @@ class clApi {
     // parse the URL and extract things like user, pass, and query string
     if (( $parts = @parse_url($url) ) && strtolower($parts['scheme']) != 'file') {
       $this->user = @$parts['user'];
-      $this->pass = @$parts['path'];
+      $this->pass = @$parts['pass'];
       @parse_str($parts['query'], $this->params);
       // rebuild $url
       $url = sprintf('%s://%s%s', 
@@ -222,7 +222,7 @@ class clApi {
     // authenticate?
     if ($this->user) {
       curl_setopt($this->ch, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
-      curl_setopt($this->ch, CURLOPT_USERPWD, "$this->user:$this->pas");
+      curl_setopt($this->ch, CURLOPT_USERPWD, "$this->user:$this->pass");
     }
     
     // set headers
