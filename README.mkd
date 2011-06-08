@@ -5,8 +5,8 @@ coreylib is a small PHP library for downloading, caching, and searching XML and 
 Basically, you give coreylib a URL, and you get back an object that you can use to extract data from the response.
 
     $rss = coreylib('http://feeds.feedburner.com/github');
-    echo $rss->get('channel title:first');
-    // prints: Squidoo : Top Performing Lenses in Books, Poetry & Writing
+    echo $rss->get('title');
+    // prints: The GitHub Blog
 
 Did we mention you get to use [jQuery-style CSS selectors](#) to extract the content you want?
 
