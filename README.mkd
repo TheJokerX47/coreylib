@@ -110,7 +110,7 @@ You should see:
 Pretty much the same result as before. Except now, you can run queries on other URLs quickly and easily, and filter them too:
 
     coreylib('http://feeds.feedburner.com/github', 'entry:eq(2)');
-    "Downloading...";
+    "Downloading..."
     > Object
       entry ->
         children ->
