@@ -35,12 +35,13 @@ You can also [write your own caching implementation](#), but only if you wanna.
 
 ##Step 2: Add coreylib to your project
 
-Adding coreylib to your PHP project is as easy as including the library into your code.
+Adding coreylib to your PHP project is as easy as including the library into your code. 
 
     <?php
-      require_once('coreylib.php');
+    require_once('coreylib.php');
+    // your code goes here:
       
-      // your code goes here:
+You only need one file: `coreylib.php`. You can dump everything else that ships with the download -- that stuff is only needed if you're going to be [modifying and building coreylib](#).
       
 If you're using coreylib with WordPress, you have a couple of options.
 
