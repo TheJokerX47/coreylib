@@ -497,29 +497,35 @@ abstract class clNode implements ArrayAccess {
    * @see http://php.net/manual/en/function.print-r.php
    */
   function &toArray() {
-    $list = array();
+    $children = array();
     
     foreach($this->descendants('', true) as $child) {
       $name = $child->name();
-      if (isset($list[$name])) {
-        if (!is_array($list[$name])) {
-          $list[$name] = array($list[$name]);
+      if (isset($children[$name])) {
+        if (!is_array($children[$name])) {
+          $children[$name] = array($children[$name]);
         }
-        $list[$name][] = (object) array(
+        $children[$name][] = (object) array_filter(array(
           'text' => trim($child->__toString()),
           'children' => $child->toArray(),
           'attribs' => $child->attribs()
-        );
+        ));
       } else {
-        $list[$name] = (object) array(
+        $children[$name] = (object) array_filter(array(
           'text' => trim($child->__toString()),
           'children' => $child->toArray(),
           'attribs' => $child->attribs()
-        );
+        ));
       }
     }
     
-    return $list;
+    $array = (object) array($this->name() => (object) array_filter(array(
+      'text' => trim($this->__toString()),
+      'children' => $children,
+      'attribs' => $this->attribs()
+    )));
+    
+    return $array;
   }
   
   /** 
@@ -528,6 +534,17 @@ abstract class clNode implements ArrayAccess {
    */
   function toJson() {
     return json_encode($this->toArray());
+  }
+  
+  /**
+   * Print a <script></script> block that spits this node's content into the JavaScript console
+   */
+  function inspect() {
+    ?>
+      <script>
+        console.log(<?php echo $this->toJson() ?>);
+      </script>
+    <?php
   }
   
   /**

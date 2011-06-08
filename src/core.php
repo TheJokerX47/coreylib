@@ -8,7 +8,7 @@ class clException extends Exception {}
  * Configuration settings.
  */
 // enable debugging output
-@define('COREYLIB_DEBUG', false);
+@define('COREYLIB_DEBUG', true);
 // maximum number of times to retry downloading content before failure
 @define('COREYLIB_MAX_DOWNLOAD_ATTEMPTS', 3);
 // the number of seconds to wait before timing out on CURL requests
