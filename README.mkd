@@ -116,6 +116,18 @@ Pretty much the same result as before. Except now, you can run queries on other 
         children ->
           ...
     
+##Step 5: Do something with it!
+
+Once you've figured out how to navigate the webs of your dataset, it's time to go back to PHP, and do something with the content!
+
+    <ul>
+      <?php if ($post = $api->get('http://feeds.feedburner.com/github')) { ?>
+        <?php foreach($post->get('entry') as $entry) { ?>
+          <li><a href="<?php echo $entry->get('link@href') ?>"><?php echo $entry->get('title') ?></a></li>
+        <?php } ?>
+      <?php } ?>
+    </ul>
+    
 #The coreylib story
 
 So, this dude [coreyweb](http://about.me/coreyweb) has a [personal website](http://coreyweb.com). He coded it all by himself using PHP, and he was very proud. Then one day he got it in his head to make his page more dynamic, with streams from *Twitter*, and *Flickr*, and *RSS* from his favorite blogs.
