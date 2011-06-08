@@ -496,7 +496,7 @@ abstract class clNode implements ArrayAccess {
    * and its children, suitable for exploring with print_r
    * @see http://php.net/manual/en/function.print-r.php
    */
-  function &toArray() {
+  function &toArray($top_level = false) {
     $children = array();
     
     foreach($this->descendants('', true) as $child) {
@@ -507,23 +507,27 @@ abstract class clNode implements ArrayAccess {
         }
         $children[$name][] = (object) array_filter(array(
           'text' => trim($child->__toString()),
-          'children' => $child->toArray(),
+          'children' => $child->toArray(false),
           'attribs' => $child->attribs()
         ));
       } else {
         $children[$name] = (object) array_filter(array(
           'text' => trim($child->__toString()),
-          'children' => $child->toArray(),
+          'children' => $child->toArray(false),
           'attribs' => $child->attribs()
         ));
       }
     }
     
-    $array = (object) array($this->name() => (object) array_filter(array(
-      'text' => trim($this->__toString()),
-      'children' => $children,
-      'attribs' => $this->attribs()
-    )));
+    if ($top_level) {
+      $array = (object) array($this->name() => (object) array_filter(array(
+        'text' => trim($this->__toString()),
+        'children' => $children,
+        'attribs' => $this->attribs()
+      )));
+    } else {
+      $array = $children;
+    }
     
     return $array;
   }
@@ -533,7 +537,7 @@ abstract class clNode implements ArrayAccess {
    * and its children.
    */
   function toJson() {
-    return json_encode($this->toArray());
+    return json_encode($this->toArray(true));
   }
   
   /**

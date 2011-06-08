@@ -67,6 +67,36 @@ With data in hand, you can use the handy-dandy javascript debugging console in y
       $feed->inspect();
     }
     
+In the console you'll see something like [this](http://cl.ly/0d0E0i1a473k023B1F43). Essentially what you're looking at here is the result of `json_encode($feed->toArray())`, but calling `$feed->inspect()` inserts the `<script></script>` block for you, so it's easier.
+
+The console output is structured like this:
+
+    feed ->
+      attribs -> array(
+        // key/value pairs, each an attribute on the <feed> tag:
+        'xml:lang' -> 'en-US'
+      ), 
+      children -> 
+        // all of the child tags appearing inside of <feed>
+        entry -> array(
+          // all of the <entry> tags appearing in <feed>
+          0 ->
+            children ->
+              author ->
+                children ->
+                  name ->
+                    text -> 'rtomayko'
+          1 ->
+            ...
+        )
+      )
+      
+The structure illustrates the relationships between all of the pieces of information, and should help you to construct **selectors**,
+which is how you will tell coreylib what data you want to read/manipulate.
+
+Alternative to `$feed->inspect()`, you can point your browser directly to the `coreylib.php` script, which will enable you
+to use the javascript console to run new coreylib queries ([watch](http://screencast.com/t/blwIMF0wXa)).
+    
 #The coreylib story
 
 So, this dude [coreyweb](http://about.me/coreyweb) has a [personal website](http://coreyweb.com). He coded it all by himself using PHP, and he was very proud. Then one day he got it in his head to make his page more dynamic, with streams from *Twitter*, and *Flickr*, and *RSS* from his favorite blogs.

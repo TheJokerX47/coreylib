@@ -12,11 +12,15 @@ if (COREYLIB_DEBUG) {
         if ($node->size() > 1) {
           $result = array();
           foreach($node as $n) {
-            $result[] = (object) array_filter(array(
-              'text' => trim($n->__toString()),
-              'children' => $n->toArray(),
-              'attribs' => $n->attribs()
-            ));
+            if (is_object($n)) {
+              $result[] = (object) array_filter(array(
+                'text' => trim($n->__toString()),
+                'children' => $n->toArray(),
+                'attribs' => $n->attribs()
+              ));
+            } else {
+              $result[] = $n;
+            }
           }
           echo json_encode($result);
         } else {
