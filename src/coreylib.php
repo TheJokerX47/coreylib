@@ -1,6 +1,8 @@
 <?php
 // oauth support
 require('oauth-support.php');
+// wordpress support
+require('wordpress-support.php');
 // the core
 require('core.php');
 // the cache class
