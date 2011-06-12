@@ -913,10 +913,10 @@ class OAuthUtil {
 class clException extends Exception {}
  
 /**
- * Configuration settings.
+ * Configuration defaults.
  */
 // enable debugging output
-@define('COREYLIB_DEBUG', true);
+@define('COREYLIB_DEBUG', false);
 // maximum number of times to retry downloading content before failure
 @define('COREYLIB_MAX_DOWNLOAD_ATTEMPTS', 3);
 // the number of seconds to wait before timing out on CURL requests
@@ -925,6 +925,8 @@ class clException extends Exception {}
 @define('COREYLIB_DEFAULT_METHOD', 'get');
 // set this to true to disable all caching activity
 @define('COREYLIB_NOCACHE', false);
+// the name of the folder to create for clFileCache files - this folder is created inside the path clFileCache is told to use
+@define('COREYLIB_FILECACHE_DIR', '.coreylib');
 
 /**
  * Coreylib core.
@@ -962,8 +964,11 @@ class clApi {
   
   /**
    * @param String $url The URL to connect to, with or without query string
+   * @param clCache $cache An instance of an implementation of clCache, or null (the default)
+   *   to trigger the use of the global caching impl, or false, to indicate that no caching
+   *   should be performed.
    */
-  function __construct($url) {
+  function __construct($url, $cache = null) {
     // parse the URL and extract things like user, pass, and query string
     if (( $parts = @parse_url($url) ) && strtolower($parts['scheme']) != 'file') {
       $this->user = @$parts['user'];
@@ -982,6 +987,8 @@ class clApi {
     $this->method = ($method = strtolower(COREYLIB_DEFAULT_METHOD)) ? $method : self::METHOD_GET;
     
     $this->curlopt(CURLOPT_CONNECTTIMEOUT, COREYLIB_DEFAULT_TIMEOUT);
+    
+    $this->cache = is_null($cache) ? coreylib_get_cache() : $cache;
   }
   
   /**
@@ -1105,7 +1112,11 @@ class clApi {
   /**
    * Download the content according to the settings on this object, or load from the cache.
    * @param bool $queue If true, setup a CURL connection and return the handle; otherwise, execute the handle and return the content
-   * @param mixed $cache_for An expression of time (e.g., 10 minutes), or 0 to cache forever, or FALSE to flush the cache, or -1 to skip over all caching (the default)
+   * @param mixed $cache_for One of:
+   *    An expression of how long to cache the data (e.g., "10 minutes")
+   *    0, indicating cache duration should be indefinite
+   *    FALSE to regenerate the cache
+   *    or -1 to skip over all caching (the default)
    * @param string $override_method one of clApi::METHOD_GET or clApi::METHOD_POST; optional, defaults to null. 
    * @return clDownload
    * @see http://php.net/manual/en/function.strtotime.php
@@ -1118,13 +1129,14 @@ class clApi {
       $url = ($method == self::METHOD_GET ? $this->url.($qs ? '?'.$qs : '') : $this->url);
     }
     
-    // use the URL to generate a cache key
-    $cache_key = md5($method.$url.$qs);
+    // use the URL to generate a cache key unique to request and any authentication data present
+    $cache_key = md5($method.$this->user.$this->pass.$url.$qs);
     if (($download = $this->cacheGet($cache_key, $cache_for)) !== false) {
       return $download;
     }
     
-    // TODO: implement File-based and Facebook-based content aqusition here
+    // TODO: implement file:// protocol here
+    
     $this->ch = curl_init($url);
     
     // authenticate?
@@ -1164,7 +1176,7 @@ class clApi {
       
       // cache?
       if ($download->is2__()) {
-        $this->cacheSet($cache_key, $cache_for, $download);
+        $this->cacheSet($cache_key, $download, $cache_for);
       }
     }
     
@@ -1179,14 +1191,14 @@ class clApi {
     if (!$this->cache || COREYLIB_NOCACHE || $cache_for === -1 || $cache_for === false) {
       return false;
     }
-    return $this->cache->get($cache_key, $cache_for);
+    return $this->cache->get($cache_key);
   }
   
-  function cacheSet($cache_key, $cache_for, $download) {
-    if (!$this->cache || COREYLIB_NOCACHE || $cache_for === -1 || $cache_for === false) {
+  function cacheSet($cache_key, $download, $cache_for = -1) {
+    if (!$this->cache || COREYLIB_NOCACHE || $cache_for === -1) {
       return false;
     } else {
-      return $this->cache->set($cache_key, $cache_for, $download);
+      return $this->cache->set($cache_key, $download, $cache_for);
     }
   }
   
@@ -1335,8 +1347,290 @@ class clDownload {
 // src/cache.php
 
 
-class clCache {
+/**
+ * Core caching pattern.
+ */
+abstract class clCache {
+ 
+  /**
+   * Get the value stored in this cache, uniquely identified by $cache_key.
+   * @param string $cache_key The cache key
+   * @param bool $return_raw Instead of returning the cached value, return a packet
+   *   of type stdClass, with two properties: expires (the timestamp
+   *   indicating when this cached data should no longer be valid), and value
+   *   (the unserialized value that was cached there)
+   */
+  abstract function get($cache_key, $return_raw = false);
   
+  /**
+   * Update the cache at $cache_key with $value, setting the expiration
+   * of $value to a moment in the future, indicated by $timeout.
+   * @param string $cache_key Uniquely identifies this cache entry
+   * @param mixed $value Some arbitrary value; can be any serializable type
+   * @param mixed $timeout An expression of time or a positive integer indicating the number of seconds;
+   *   a $timeout of 0 indicates "cache indefinitely."
+   * @return a stdClass instance with two properties: expires (the timestamp
+   * indicating when this cached data should no longer be valid), and value
+   * (the unserialized value that was cached there)
+   * @see http://php.net/manual/en/function.strtotime.php
+   */
+  abstract function set($cache_key, $value, $timeout = 0);
+  
+  /**
+   * Remove from the cache the value uniquely identified by $cache_key
+   * @param string $cache_key
+   * @return true when the cache key existed; otherwise, false
+   */
+  abstract function del($cache_key);
+  
+  /** 
+   * Store or retrieve the global cache object.
+   */
+  static $cache;
+  static function cache($cache = null) {
+    if (!is_null($cache)) {
+      if (!is_a($cache, 'clCache')) {
+        throw new Exception('Object %s does not inherit from clCache', get_class($object));
+      }
+      self::$cache = $cache;
+    }
+    
+    // default is FileCache
+    if (!self::$cache) {
+      try {
+        self::$cache = new clFileCache();
+      } catch (Exception $e) {
+        clApi::log($e, E_USER_WARNING);
+        return false;
+      }
+    }
+    
+    return self::$cache;
+  }
+  
+  /**
+   * Convert timeout expression to timestamp marking the moment in the future
+   * at which point the timeout (or expiration) would occur.
+   * @param mixed $timeout An expression of time or a positive integer indicating the number of seconds
+   * @see http://php.net/manual/en/function.strtotime.php
+   * @return a *nix timestamp in the future, or the current time if $timeout is 0, always in GMT.
+   */
+  static function time($timeout = 0) {
+    if ($timeout === -1) {
+      return false;
+    }
+    
+    if (!is_numeric($timeout)) {
+      $original = trim($timeout);
+  
+      // normalize the expression: should be future
+      $firstChar = substr($timeout, 0, 1);
+      if ($firstChar == "-") {
+        $timeout = substr($timeout, 1);
+      } else if ($firstChar != "-") {
+        if (stripos($timeout, 'last') === false) {
+          $timeout = str_replace('last', 'next', $timeout);
+        }
+      }
+      
+      if (($timeout = strtotime(gmdate('c', strtotime($timeout)))) === false) {
+        clApi::log("'$original' is an invalid expression of time.", E_USER_WARNING);
+        return false;
+      }
+            
+      return $timeout;
+    } else {
+      return strtotime(gmdate('c'))+$timeout;
+    }
+  }
+  
+  /**
+   * Produce a standard cache packet.
+   * @param $value to be wrapped
+   * @return stdClass
+   */
+  static function raw(&$value, $expires) {
+    return (object) array(
+      'created' => self::time(),
+      'expires' => $expires,
+      'value' => $value
+    );
+  }
+  
+}
+
+/**
+ * A proxy for another caching system -- stashes the cached
+ * data in memory, for fastest possible access. 
+ */
+class clStash extends clCache {
+  
+  private $proxied;
+  private $mem = array();
+  
+  function __construct($cache) {
+    if (is_null($cache)) {
+      throw new clException("Cache object to proxy cannot be null.");
+    }
+    $this->proxied = $cache;
+  }
+  
+  function get($cache_key, $return_raw = false) {
+    if ($stashed = @$this->mem[$cache_key]) {
+      // is the stash too old?
+      if ($stashed->expires != 0 && $stashed->expires <= self::time()) {
+        // yes, stash is too old. try to resource, just in case
+        if ($raw = $this->proxied->get($cache_key, true)) {
+          // there was something fresher in the proxied cache, to stash it
+          $this->mem[$cache_key] = $raw;
+          // then return the requested data
+          return $return_raw ? $raw : $raw->value;
+        // nope... we got nothing
+        } else {
+          return false;
+        }
+      // no, the stash was not too old
+      } else {
+        clApi::log("Cached data loaded from runtime stack [{$cache_key}]");
+        return $return_raw ? $stashed : $stashed->value;
+      }
+    // there was nothing in the stash:
+    } else {
+      // try to retrieve from the proxied cache:
+      if ($raw = $this->proxied->get($cache_key, true)) {
+        // there was a value in the proxied cache:
+        $this->mem[$cache_key] = $raw;
+        return $return_raw ? $raw : $raw->value;
+      // nothing in the proxied cache:
+      } else {
+        return false;
+      }
+    }
+  }
+  
+  function set($cache_key, $value, $timeout = 0) {
+    return $this->mem[$cache_key] = $this->proxied->set($cache_key, $value, $timeout);
+  }
+  
+  function del($cache_key) {
+    unset($this->mem[$cache_key]);
+    return $this->proxied->del($cache_key);
+  }
+  
+}
+
+/**
+ * Caches data to the file system.
+ */
+class clFileCache extends clCache {
+  
+  function get($cache_key, $return_raw = false) {
+    // seek out the cached data
+    if (@file_exists($path = $this->path($cache_key))) {
+      // if the data exists, try to load it into memory
+      if ($content = @file_get_contents($path)) {
+        // if it can be read, try to unserialize it
+        if ($raw = @unserialize($content)) {
+          // if it's not expired
+          if ($raw->expires == 0 || self::time() < $raw->expires) {
+            // return the requested data type
+            return $return_raw ? $raw : $raw->value;
+          // otherwise, purge the file, note the expiration, and move on
+          } else {
+            @unlink($path);
+            clApi::log("Cache was expired [{$cache_key}:{$path}]");
+            return false;
+          }
+        // couldn't be unserialized
+        } else {
+          clApi::log("Failed to unserialize cache file: {$path}", E_USER_WARNING);
+        }
+      // data couldn't be read, or the cache file was empty
+      } else {
+        clApi::log("Failed to read cache file: {$path}", E_USER_WARNING);
+      }
+    // cache file did not exist
+    } else {
+      clApi::log("Cache does not exist [{$cache_key}:{$path}]");
+      return false;
+    }
+  }
+  
+  function set($cache_key, $value, $timeout = 0) {
+    // make sure $timeout is valid
+    if (($expires = self::time($timeout)) === false) {
+      return false;
+    }
+    
+    if ($serialized = @serialize($raw = self::raw($value, $expires))) {
+      if (!@file_put_contents($path = $this->path($cache_key), $serialized)) {
+        clApi::log("Failed to write cache file: {$path}", E_USER_WARNING);
+      } else {
+        return $raw;
+      }
+    } else {
+      clApi::log("Failed to serialize cache data [{$cache_key}]", E_USER_WARNING);
+      return false;
+    }
+  }
+  
+  function del($cache_key) {
+    if (@file_exists($path = $this->path($cache_key))) {
+      return @unlink($path);
+    } else {
+      return false;
+    }
+  }
+  
+  private $basepath;
+  
+  /**
+   * @throws clException When the path that is to be the basepath for the cache
+   * files cannot be created and/or is not writable.
+   */
+  function __construct($root = null) {
+    if (is_null($root)) {
+      $root = realpath(dirname(__FILE__));
+    }
+    // prepend the coreylib folder
+    $root .= DIRECTORY_SEPARATOR . COREYLIB_FILECACHE_DIR;
+    // if it doesn't exist
+    if (!@file_exists($root)) {
+      // create it
+      if (!@mkdir($root)) {
+        throw new clException("Unable to create File Cache basepath: {$root}");
+      }
+    } 
+    
+    // otherwise, if it's not writable
+    if (!is_writable($root)) {
+      throw new clException("File Cache basepath exists, but is not writable: {$root}");
+    }
+    
+    $this->basepath = $root;
+  }
+  
+  private static $last_path;
+  
+  /**
+   * Generate the file path.
+   */
+  private function path($cache_key = null) {
+    return self::$last_path = $this->basepath . DIRECTORY_SEPARATOR . md5($cache_key) . '.coreylib';
+  }
+  
+  static function getLastPath() {
+    return self::$last_path;
+  }
+  
+}
+
+function coreylib_set_cache($cache) {
+  clCache::cache($cache);
+}
+
+function coreylib_get_cache() {
+  return clCache::cache();
 }
 // src/node.php
 
@@ -2473,10 +2767,16 @@ if (COREYLIB_DEBUG) {
       <script>!window.jQuery && document.write(unescape('%3Cscript src=\"//ajax.googleapis.com/ajax/libs/jquery/1.5.2/jquery.min.js\"%3E%3C/script%3E'))</script>
       <script>
         function coreylib(url, selector) {
-          jQuery.post('coreylib.php', { 'url': url, 'selector': selector }, function(json) {
-            console.log(json);
+          jQuery.ajax({
+            url: 'coreylib.php', 
+            data: { 'url': url, 'selector': selector },
+            dataType: 'json',
+            type: 'POST',
+            success: function(json) {
+              console.log(json.length, json);
+            }
           });
-          return 'Downloading...';
+          return "Downloading...";
         }
       </script>
     <?php

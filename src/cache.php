@@ -189,7 +189,7 @@ class clFileCache extends clCache {
             return $return_raw ? $raw : $raw->value;
           // otherwise, purge the file, note the expiration, and move on
           } else {
-            //@unlink($path);
+            @unlink($path);
             clApi::log("Cache was expired [{$cache_key}:{$path}]");
             return false;
           }
@@ -228,7 +228,7 @@ class clFileCache extends clCache {
   
   function del($cache_key) {
     if (@file_exists($path = $this->path($cache_key))) {
-      //return @unlink($path);
+      return @unlink($path);
     } else {
       return false;
     }
@@ -262,11 +262,17 @@ class clFileCache extends clCache {
     $this->basepath = $root;
   }
   
+  private static $last_path;
+  
   /**
    * Generate the file path.
    */
   private function path($cache_key = null) {
-    return $this->basepath . DIRECTORY_SEPARATOR . md5($cache_key) . '.coreylib';
+    return self::$last_path = $this->basepath . DIRECTORY_SEPARATOR . md5($cache_key) . '.coreylib';
+  }
+  
+  static function getLastPath() {
+    return self::$last_path;
   }
   
 }
