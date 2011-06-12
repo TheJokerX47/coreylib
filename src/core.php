@@ -8,7 +8,7 @@ class clException extends Exception {}
  * Configuration defaults.
  */
 // enable debugging output
-@define('COREYLIB_DEBUG', true);
+@define('COREYLIB_DEBUG', false);
 // maximum number of times to retry downloading content before failure
 @define('COREYLIB_MAX_DOWNLOAD_ATTEMPTS', 3);
 // the number of seconds to wait before timing out on CURL requests
@@ -268,7 +268,7 @@ class clApi {
       
       // cache?
       if ($download->is2__()) {
-        $this->cacheSet($cache_key, $cache_for, $download);
+        $this->cacheSet($cache_key, $download, $cache_for);
       }
     }
     
@@ -286,11 +286,11 @@ class clApi {
     return $this->cache->get($cache_key);
   }
   
-  function cacheSet($cache_key, $cache_for, $download) {
+  function cacheSet($cache_key, $download, $cache_for = -1) {
     if (!$this->cache || COREYLIB_NOCACHE || $cache_for === -1) {
       return false;
     } else {
-      return $this->cache->set($cache_key, $cache_for, $download);
+      return $this->cache->set($cache_key, $download, $cache_for);
     }
   }
   

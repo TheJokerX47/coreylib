@@ -92,7 +92,7 @@ abstract class clCache {
             
       return $timeout;
     } else {
-      return strtotime(gmdate())+$timeout;
+      return strtotime(gmdate('c'))+$timeout;
     }
   }
   
@@ -184,12 +184,12 @@ class clFileCache extends clCache {
         // if it can be read, try to unserialize it
         if ($raw = @unserialize($content)) {
           // if it's not expired
-          if ($raw->expires <= self::time()) {
+          if ($raw->expires == 0 || self::time() < $raw->expires) {
             // return the requested data type
             return $return_raw ? $raw : $raw->value;
           // otherwise, purge the file, note the expiration, and move on
           } else {
-            @unlink($path);
+            //@unlink($path);
             clApi::log("Cache was expired [{$cache_key}:{$path}]");
             return false;
           }
@@ -228,7 +228,7 @@ class clFileCache extends clCache {
   
   function del($cache_key) {
     if (@file_exists($path = $this->path($cache_key))) {
-      return @unlink($path);
+      //return @unlink($path);
     } else {
       return false;
     }
