@@ -5,8 +5,7 @@
 class CoreTests extends UnitTestCase {
   
   function testDownloadAndParse() {
-    echo coreylib('http://feeds.feedburner.com/github')->get('title');
-    $this->assertNotEqual('', coreylib('http://feeds.feedburner.com/github')->get('title'));
+    $this->assertEqual('The GitHub Blog', coreylib('http://feeds.feedburner.com/github')->get('title'));
   }
   
 }
