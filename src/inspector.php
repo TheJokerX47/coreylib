@@ -37,10 +37,16 @@ if (COREYLIB_DEBUG) {
       <script>!window.jQuery && document.write(unescape('%3Cscript src=\"//ajax.googleapis.com/ajax/libs/jquery/1.5.2/jquery.min.js\"%3E%3C/script%3E'))</script>
       <script>
         function coreylib(url, selector) {
-          jQuery.post('coreylib.php', { 'url': url, 'selector': selector }, function(json) {
-            console.log(json);
+          jQuery.ajax({
+            url: 'coreylib.php', 
+            data: { 'url': url, 'selector': selector },
+            dataType: 'json',
+            type: 'POST',
+            success: function(json) {
+              console.log(json.length, json);
+            }
           });
-          return 'Downloading...';
+          return "Downloading...";
         }
       </script>
     <?php

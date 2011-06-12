@@ -5,7 +5,7 @@
 class clException extends Exception {}
  
 /**
- * Configuration settings.
+ * Configuration defaults.
  */
 // enable debugging output
 @define('COREYLIB_DEBUG', true);
@@ -17,6 +17,8 @@ class clException extends Exception {}
 @define('COREYLIB_DEFAULT_METHOD', 'get');
 // set this to true to disable all caching activity
 @define('COREYLIB_NOCACHE', false);
+// the name of the folder to create for clFileCache files - this folder is created inside the path clFileCache is told to use
+@define('COREYLIB_FILECACHE_DIR', '.coreylib');
 
 /**
  * Coreylib core.
@@ -54,8 +56,11 @@ class clApi {
   
   /**
    * @param String $url The URL to connect to, with or without query string
+   * @param clCache $cache An instance of an implementation of clCache, or null (the default)
+   *   to trigger the use of the global caching impl, or false, to indicate that no caching
+   *   should be performed.
    */
-  function __construct($url) {
+  function __construct($url, $cache = null) {
     // parse the URL and extract things like user, pass, and query string
     if (( $parts = @parse_url($url) ) && strtolower($parts['scheme']) != 'file') {
       $this->user = @$parts['user'];
@@ -74,6 +79,8 @@ class clApi {
     $this->method = ($method = strtolower(COREYLIB_DEFAULT_METHOD)) ? $method : self::METHOD_GET;
     
     $this->curlopt(CURLOPT_CONNECTTIMEOUT, COREYLIB_DEFAULT_TIMEOUT);
+    
+    $this->cache = is_null($cache) ? coreylib_get_cache() : $cache;
   }
   
   /**
@@ -197,7 +204,11 @@ class clApi {
   /**
    * Download the content according to the settings on this object, or load from the cache.
    * @param bool $queue If true, setup a CURL connection and return the handle; otherwise, execute the handle and return the content
-   * @param mixed $cache_for An expression of time (e.g., 10 minutes), or 0 to cache forever, or FALSE to flush the cache, or -1 to skip over all caching (the default)
+   * @param mixed $cache_for One of:
+   *    An expression of how long to cache the data (e.g., "10 minutes")
+   *    0, indicating cache duration should be indefinite
+   *    FALSE to regenerate the cache
+   *    or -1 to skip over all caching (the default)
    * @param string $override_method one of clApi::METHOD_GET or clApi::METHOD_POST; optional, defaults to null. 
    * @return clDownload
    * @see http://php.net/manual/en/function.strtotime.php
@@ -210,13 +221,14 @@ class clApi {
       $url = ($method == self::METHOD_GET ? $this->url.($qs ? '?'.$qs : '') : $this->url);
     }
     
-    // use the URL to generate a cache key
-    $cache_key = md5($method.$url.$qs);
+    // use the URL to generate a cache key unique to request and any authentication data present
+    $cache_key = md5($method.$this->user.$this->pass.$url.$qs);
     if (($download = $this->cacheGet($cache_key, $cache_for)) !== false) {
       return $download;
     }
     
-    // TODO: implement File-based and Facebook-based content aqusition here
+    // TODO: implement file:// protocol here
+    
     $this->ch = curl_init($url);
     
     // authenticate?
@@ -271,11 +283,11 @@ class clApi {
     if (!$this->cache || COREYLIB_NOCACHE || $cache_for === -1 || $cache_for === false) {
       return false;
     }
-    return $this->cache->get($cache_key, $cache_for);
+    return $this->cache->get($cache_key);
   }
   
   function cacheSet($cache_key, $cache_for, $download) {
-    if (!$this->cache || COREYLIB_NOCACHE || $cache_for === -1 || $cache_for === false) {
+    if (!$this->cache || COREYLIB_NOCACHE || $cache_for === -1) {
       return false;
     } else {
       return $this->cache->set($cache_key, $cache_for, $download);
