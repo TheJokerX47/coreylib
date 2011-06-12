@@ -20,6 +20,7 @@ If you want coreylib to be able to cache, you need one of
 1. Write access to the physical file system
 2. MySQL
 3. Memcached
+4. Your own implementation of [clCache](#)
 
 Memcached is definitely the way to go, if you can swing it. Running Ubuntu?
 
