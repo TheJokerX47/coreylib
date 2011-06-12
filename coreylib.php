@@ -1,4 +1,14 @@
 <?php
+/*
+Plugin Name: coreylib
+Plugin URI: http://github.com/collegeman/coreylib
+Description: A small PHP library for downloading, caching, and extracting data from XML and JSON
+Version: 2.0
+Author: Aaron Collegeman
+Author URI: http://github.com/collegeman
+License: GPL2
+*/
+
 /**
  * coreylib
  * Parse and cache XML and JSON.
@@ -904,6 +914,24 @@ class OAuthUtil {
     return implode('&', $pairs);
   }
 }
+// src/wordpress-support.php
+
+
+/**
+ * These next few lines allow coreylib.php to be dropped into your plugins folder.
+ * Doing so will automatically configure it to use the WordPress database for cache storage.
+ * You can override the cache system by setting COREYLIB_DETECT_WORDPRESS to false in your
+ * wp-config.php, or by calling coreylib_set_cache(clCache) at any time to override.
+ */
+if (COREYLIB_DETECT_WORDPRESS) {
+  // if the add_action function is present, assume this is wordpress
+  if (function_exists('add_action')) {
+    function init_coreylib_cache() {
+      coreylib_set_cache(new clWordPressCache());
+    }
+    add_action('init', 'init_coreylib_cache');
+  }
+}
 // src/core.php
 
  
@@ -1395,9 +1423,9 @@ abstract class clCache {
       self::$cache = $cache;
     }
     
-    // default is FileCache
     if (!self::$cache) {
       try {
+        // default is FileCache
         self::$cache = new clFileCache();
       } catch (Exception $e) {
         clApi::log($e, E_USER_WARNING);
@@ -1621,6 +1649,113 @@ class clFileCache extends clCache {
   
   static function getLastPath() {
     return self::$last_path;
+  }
+  
+}
+
+/**
+ * Caches data to the WordPress database.
+ */
+class clWordPressCache extends clCache {
+  
+  private $wpdb;
+  
+  function __construct() {
+    global $wpdb;
+    
+    $wpdb->coreylib = $wpdb->prefix.'coreylib';
+    
+    $wpdb->query("
+      CREATE TABLE IF NOT EXISTS $wpdb->coreylib (
+        `cache_key` VARCHAR(32) NOT NULL,
+        `value` TEXT,
+        `expires` DATETIME,
+        `created` DATETIME,
+        PRIMARY KEY(`cache_key`)
+      );
+    ");
+    
+    if (!$wpdb->get_results("SHOW TABLES LIKE '$wpdb->coreylib'")) {
+      clApi::log("Failed to create coreylib table for WordPress: {$wpdb->coreylib}");
+    } else {
+      $this->wpdb =& $wpdb;
+    }
+  }
+  
+  function get($cache_key, $return_raw = false) {
+    if (!$this->wpdb) {
+      return false;
+    }
+    
+    // prepare the SQL
+    $sql = $this->wpdb->prepare("SELECT * FROM $wpdb->coreylib WHERE `cache_key` = ? LIMIT 1", $cache_key);
+    // seek out the cached data
+    if ($raw = $this->wpdb->get_row($sql)) {
+      // convert MySQL date strings to timestamps
+      $raw->expires = is_null($raw->expires) ? 0 : strtotime($raw->expires);
+      $raw->created = strtotime($raw->created);
+      $raw->value = @unserialize($raw->value);
+      // if it's not expired
+      if (is_null($raw->expires) || self::time() < strtotime($raw->expires)) {
+        // return the requested data type
+        return $return_raw ? $raw : $raw->value;
+      // otherwise, purge the file, note the expiration, and move on
+      } else {
+        $this->del($cache_key);
+        clApi::log("Cache was expired [{$cache_key}]");
+        return false;
+      }
+    
+    // cache did not exist
+    } else {
+      clApi::log("Cache record does not exist [{$cache_key}]");
+      return false;
+    }
+  }
+  
+  function set($cache_key, $value, $timeout = 0) {
+    if (!$this->wpdb) {
+      return false;
+    }
+    
+    // make sure $timeout is valid
+    if (($expires = self::time($timeout)) === false) {
+      return false;
+    }
+    
+    // if the value can be serialized
+    if ($serialized = @serialize($value)) {
+      // prepare the SQL
+      $sql = $this->wpdb->prepare("
+        REPLACE INTO $wpdb->coreylib 
+        (`cache_key`, `created`, `expires`, `value`) 
+        VALUES 
+        (?, ?, ?, ?)
+      ", 
+        $cache_key,
+        strtotime('Y/m/d H:i:s', $raw->created),
+        strtotime('Y/m/d H:i:s', $raw->expires),
+        $serialized
+      );
+      
+      // insert it!
+      $this->wpdb->query($sql);
+      // TODO: test for failures
+      
+      return $raw;
+    } else {
+      clApi::log("Failed to serialize cache data [{$cache_key}]", E_USER_WARNING);
+      return false;
+    }
+  }
+  
+  function del($cache_key) {
+    if (!$this->enabled) {
+      return false;
+    }
+    // prepare the SQL
+    $sql = $this->wpdb->prepare("DELETE FROM $wpdb->coreylib WHERE `cache_key` = ? LIMIT 1", $cache_key);
+    return $this->wpdb->query($sql);
   }
   
 }

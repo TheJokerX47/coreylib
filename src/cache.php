@@ -318,22 +318,18 @@ class clWordPressCache extends clCache {
       // convert MySQL date strings to timestamps
       $raw->expires = is_null($raw->expires) ? 0 : strtotime($raw->expires);
       $raw->created = strtotime($raw->created);
-      // if it can be read, try to unserialize it
-      if ($raw->value = @unserialize($raw->value)) {
-        // if it's not expired
-        if (is_null($raw->expires) || self::time() < strtotime($raw->expires)) {
-          // return the requested data type
-          return $return_raw ? $raw : $raw->value;
-        // otherwise, purge the file, note the expiration, and move on
-        } else {
-          $this->del($cache_key);
-          clApi::log("Cache was expired [{$cache_key}]");
-          return false;
-        }
-      // couldn't be unserialized
+      $raw->value = @unserialize($raw->value);
+      // if it's not expired
+      if (is_null($raw->expires) || self::time() < strtotime($raw->expires)) {
+        // return the requested data type
+        return $return_raw ? $raw : $raw->value;
+      // otherwise, purge the file, note the expiration, and move on
       } else {
-        clApi::log("Failed to unserialize cached data [{$cache_key}]", E_USER_WARNING);
+        $this->del($cache_key);
+        clApi::log("Cache was expired [{$cache_key}]");
+        return false;
       }
+    
     // cache did not exist
     } else {
       clApi::log("Cache record does not exist [{$cache_key}]");
@@ -351,7 +347,8 @@ class clWordPressCache extends clCache {
       return false;
     }
     
-    if ($serialized = @serialize($raw = self::raw($value, $expires))) {
+    // if the value can be serialized
+    if ($serialized = @serialize($value)) {
       // prepare the SQL
       $sql = $this->wpdb->prepare("
         REPLACE INTO $wpdb->coreylib 
@@ -365,8 +362,10 @@ class clWordPressCache extends clCache {
         $serialized
       );
       
+      // insert it!
       $this->wpdb->query($sql);
       // TODO: test for failures
+      
       return $raw;
     } else {
       clApi::log("Failed to serialize cache data [{$cache_key}]", E_USER_WARNING);
