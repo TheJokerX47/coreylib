@@ -5,7 +5,7 @@ if (COREYLIB_DEBUG) {
   trigger_error("COREYLIB_DEBUG is enabled", E_USER_WARNING);
   
   if ($url = @$_POST['url']) {
-    if ($node = coreylib($url)) {
+    if ($node = coreylib($url, @$_POST['flush'] ? false : '10 minutes')) {
       header('Content-Type: application/json');
       if ($selector = @$_POST['selector']) {
         $node = $node->get($selector);
@@ -36,10 +36,10 @@ if (COREYLIB_DEBUG) {
     ?>
       <script>!window.jQuery && document.write(unescape('%3Cscript src=\"//ajax.googleapis.com/ajax/libs/jquery/1.5.2/jquery.min.js\"%3E%3C/script%3E'))</script>
       <script>
-        function coreylib(url, selector) {
+        function coreylib(url, selector, flush) {
           jQuery.ajax({
             url: 'coreylib.php', 
-            data: { 'url': url, 'selector': selector },
+            data: { 'url': url, 'selector': selector, 'flush': flush },
             dataType: 'json',
             type: 'POST',
             success: function(json) {

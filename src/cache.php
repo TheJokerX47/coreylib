@@ -35,6 +35,11 @@ abstract class clCache {
    */
   abstract function del($cache_key);
   
+  /**
+   * Remove all cache entries.
+   */
+  abstract function flush();
+  
   /** 
    * Store or retrieve the global cache object.
    */
@@ -44,13 +49,13 @@ abstract class clCache {
       if (!is_a($cache, 'clCache')) {
         throw new Exception('Object %s does not inherit from clCache', get_class($object));
       }
-      self::$cache = $cache;
+      self::$cache = new clStash($cache);
     }
     
     if (!self::$cache) {
       try {
         // default is FileCache
-        self::$cache = new clFileCache();
+        self::$cache = new clStash(new clFileCache());
       } catch (Exception $e) {
         clApi::log($e, E_USER_WARNING);
         return false;
@@ -169,6 +174,11 @@ class clStash extends clCache {
     return $this->proxied->del($cache_key);
   }
   
+  function flush() {
+    $this->mem[] = array();
+    $this->proxied->flush();
+  }
+  
 }
 
 /**
@@ -231,6 +241,17 @@ class clFileCache extends clCache {
       return @unlink($path);
     } else {
       return false;
+    }
+  }
+  
+  function flush() {
+    if ($dir = opendir($this->basepath)) {
+      while($file = readdir($dir)) {
+        if (preg_match('#\.coreylib$#', $file)) {
+          @unlink($this->basepath . DIRECTORY_SEPARATOR . $file);
+        }
+      }
+      closedir($this->basepath);
     }
   }
   
@@ -312,7 +333,7 @@ class clWordPressCache extends clCache {
     }
     
     // prepare the SQL
-    $sql = $this->wpdb->prepare("SELECT * FROM $wpdb->coreylib WHERE `cache_key` = ? LIMIT 1", $cache_key);
+    $sql = $this->wpdb->prepare("SELECT * FROM {$this->wpdb->coreylib} WHERE `cache_key` = %s LIMIT 1", $cache_key);
     // seek out the cached data
     if ($raw = $this->wpdb->get_row($sql)) {
       // convert MySQL date strings to timestamps
@@ -320,7 +341,7 @@ class clWordPressCache extends clCache {
       $raw->created = strtotime($raw->created);
       $raw->value = @unserialize($raw->value);
       // if it's not expired
-      if (is_null($raw->expires) || self::time() < strtotime($raw->expires)) {
+      if (is_null($raw->expires) || self::time() < $raw->expires) {
         // return the requested data type
         return $return_raw ? $raw : $raw->value;
       // otherwise, purge the file, note the expiration, and move on
@@ -351,14 +372,14 @@ class clWordPressCache extends clCache {
     if ($serialized = @serialize($value)) {
       // prepare the SQL
       $sql = $this->wpdb->prepare("
-        REPLACE INTO $wpdb->coreylib 
+        REPLACE INTO {$this->wpdb->coreylib} 
         (`cache_key`, `created`, `expires`, `value`) 
         VALUES 
-        (?, ?, ?, ?)
+        (%s, %s, %s, %s)
       ", 
         $cache_key,
-        strtotime('Y/m/d H:i:s', $raw->created),
-        strtotime('Y/m/d H:i:s', $raw->expires),
+        date('Y/m/d H:i:s', self::time()),
+        date('Y/m/d H:i:s', $expires),
         $serialized
       );
       
@@ -378,8 +399,16 @@ class clWordPressCache extends clCache {
       return false;
     }
     // prepare the SQL
-    $sql = $this->wpdb->prepare("DELETE FROM $wpdb->coreylib WHERE `cache_key` = ? LIMIT 1", $cache_key);
+    $sql = $this->wpdb->prepare("DELETE FROM {$this->wpdb->coreylib} WHERE `cache_key` = %s LIMIT 1", $cache_key);
     return $this->wpdb->query($sql);
+  }
+  
+  function flush() {
+    if (!$this->wpdb) {
+      return false;
+    }
+    
+    $this->wpdb->query("TRUNCATE {$this->wpdb->coreylib}");
   }
   
 }
@@ -390,4 +419,10 @@ function coreylib_set_cache($cache) {
 
 function coreylib_get_cache() {
   return clCache::cache();
+}
+
+function coreylib_flush() {
+  if ($cache = clCache::cache()) {
+    $cache->flush();
+  }
 }

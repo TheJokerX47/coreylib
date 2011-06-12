@@ -19,6 +19,8 @@ class clException extends Exception {}
 @define('COREYLIB_NOCACHE', false);
 // the name of the folder to create for clFileCache files - this folder is created inside the path clFileCache is told to use
 @define('COREYLIB_FILECACHE_DIR', '.coreylib');
+// auto-detect WordPress environment?
+@define('COREYLIB_DETECT_WORDPRESS', true);
 
 /**
  * Coreylib core.
@@ -314,6 +316,11 @@ class clApi {
       $msg = $msg->getMessage();
     } else if (!is_string($msg)) {
       $msg = print_r($msg, true);
+    }
+
+    if ($level == E_USER_NOTICE && !COREYLIB_DEBUG) {
+      // SHHH...
+      return $msg;
     }
     
     trigger_error($msg, $level);

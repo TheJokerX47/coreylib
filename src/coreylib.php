@@ -1,8 +1,4 @@
 <?php
-// oauth support
-require('oauth-support.php');
-// wordpress support
-require('wordpress-support.php');
 // the core
 require('core.php');
 // the cache class
@@ -11,3 +7,7 @@ require('cache.php');
 require('node.php');
 // the inspector tool
 require('inspector.php');
+// oauth support
+require('oauth-support.php');
+// wordpress support
+require('wordpress-support.php');

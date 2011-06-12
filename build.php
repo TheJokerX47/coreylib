@@ -14,7 +14,7 @@ echo "<?php
 /*
 Plugin Name: coreylib
 Plugin URI: http://github.com/collegeman/coreylib
-Description: A small PHP library for downloading, caching, and extracting data from XML and JSON
+Description: A small PHP library for downloading, caching, and extracting data formatted as XML or JSON
 Version: 2.0
 Author: Aaron Collegeman
 Author URI: http://github.com/collegeman
