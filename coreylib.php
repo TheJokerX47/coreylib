@@ -1870,7 +1870,7 @@ class clXmlNode extends clNode {
     }
   }
   
-  function namespace() {
+  function ns() {
     return $this->ns;
   }
   
