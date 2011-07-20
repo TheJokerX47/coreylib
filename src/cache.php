@@ -46,7 +46,7 @@ abstract class clCache {
   static $cache;
   static function cache($cache = null) {
     if (!is_null($cache)) {
-      if (!is_a($cache, 'clCache')) {
+      if (!($cache instanceof clCache)) {
         throw new Exception('Object %s does not inherit from clCache', get_class($object));
       }
       self::$cache = new clStash($cache);

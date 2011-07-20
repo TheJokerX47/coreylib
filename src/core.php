@@ -34,8 +34,6 @@ class clApi {
   
   // the URL provided in the constructor
   private $url;
-  // the content we're parsing
-  private $content;
   // default HTTP headers
   private $headers = array(
     
@@ -55,6 +53,10 @@ class clApi {
   private $ch;
   // reference to caching strategy
   private $cache;
+  // the download
+  private $download;
+  // the cache key
+  private $cache_key;
   
   /**
    * @param String $url The URL to connect to, with or without query string
@@ -95,16 +97,19 @@ class clApi {
    */
   function &parse($cache_for = -1, $override_method = null, $node_type = null) {
     $node = false;
-    $download = $this->download(false, $cache_for, $override_method);
+    
+    if (is_null($this->download)) {
+      $this->download = $this->download(false, $cache_for, $override_method);
+    }
       
     // if the download succeeded
-    if ($download->is2__()) {
+    if ($this->download->is2__()) {
       if ($node_type) {
-        $node = clNode::getNodeFor($download->getContent(), $node_type);
-      } else if ($download->isXml()) {
-        $node = clNode::getNodeFor($download->getContent(), 'xml');
-      } else if ($download->isJson()) {
-        $node = clNode::getNodeFor($download->getContent(), 'json');
+        $node = clNode::getNodeFor($this->download->getContent(), $node_type);
+      } else if ($this->download->isXml()) {
+        $node = clNode::getNodeFor($this->download->getContent(), 'xml');
+      } else if ($this->download->isJson()) {
+        $node = clNode::getNodeFor($this->download->getContent(), 'json');
       } else {
         throw new clException("Unable to determine content type. You can force a particular type by passing a third argument to clApi->parse(\$cache_for = -1, \$override_method = null, \$node_type = null).");
       }
@@ -125,10 +130,17 @@ class clApi {
   }
   
   /**
+   * Retrieve the content of the parsed document.
+   */
+  function getContent() {
+    return $this->download ? $this->download->getContent() : '';
+  }
+  
+  /**
    * Print the content of the parsed document.
    */
   function __toString() {
-    return ($this->content ? $this->content : '');
+    return $this->getContent();
   }
   
   /**
@@ -219,12 +231,10 @@ class clApi {
     $method = is_null($override_method) ? $this->method : $override_method;
   
     $qs = http_build_query($this->params);
-    if ($method != self::METHOD_POST) {
-      $url = ($method == self::METHOD_GET ? $this->url.($qs ? '?'.$qs : '') : $this->url);
-    }
+    $url = ($method == self::METHOD_GET ? $this->url.($qs ? '?'.$qs : '') : $this->url);
     
     // use the URL to generate a cache key unique to request and any authentication data present
-    $cache_key = md5($method.$this->user.$this->pass.$url.$qs);
+    $this->cache_key = $cache_key = md5($method.$this->user.$this->pass.$url.$qs);
     if (($download = $this->cacheGet($cache_key, $cache_for)) !== false) {
       return $download;
     }
@@ -251,9 +261,7 @@ class clApi {
       curl_setopt($this->ch, $opt, $val);
     }
     
-    if (!$queue) {
-      curl_setopt($this->ch, CURLOPT_RETURNTRANSFER, true);
-    }
+    curl_setopt($this->ch, CURLOPT_RETURNTRANSFER, true);
     
     if ($this->method != self::METHOD_POST) {
       curl_setopt($this->ch, CURLOPT_HTTPGET, true);
@@ -263,7 +271,8 @@ class clApi {
     }
     
     if ($queue) {
-      $download = clDownload($this->ch, null);
+      $download = new clDownload($this->ch, false);
+      
     } else {
       $content = curl_exec($this->ch);
       $download = new clDownload($this->ch, $content);
@@ -275,6 +284,14 @@ class clApi {
     }
     
     return $download;
+  }
+  
+  function setDownload(&$download) {
+    if (!($download instanceof clDownload)) {
+      throw new Exception('$download must be of type clDownload');
+    }
+    
+    $this->download = $download;
   }
   
   function cacheWith($clCache) {
@@ -304,6 +321,75 @@ class clApi {
     }
   }
   
+  function getCacheKey() {
+    return $this->cache_key;
+  }
+  
+  function &getDownload() {
+    return $this->download;
+  }
+  
+  /**
+   * Use curl_multi to execute a collection of clApi objects.
+   */
+  static function exec($apis, $cache_for = -1, $override_method = null, $node_type = null) {
+    $mh = curl_multi_init();
+    
+    $handles = array();
+    
+    foreach($apis as $a => $api) {
+      if (is_string($api)) {
+        $api = new clApi($api);
+        $apis[$a] = $api;
+      } else if (!($api instanceof clApi)) {
+        throw new Exception("clApi::exec expects an Array of clApi objects.");
+      }
+      
+      $download = $api->download(true, $cache_for, $override_method);
+      $ch = $download->getCurl();
+      
+      if ($download->getContent() === false) {
+        curl_multi_add_handle($mh, $ch);
+      } else {
+        $api->setDownload($download);
+      }
+      
+      $handles[$ch] = array($api, $download, $ch);
+    }
+    
+    do {
+      $status = curl_multi_exec($mh, $active);
+    } while($status == CURLM_CALL_MULTI_PERFORM || $active);
+    
+    foreach($handles as $ch => $ref) {
+      list($api, $download, $ch) = $ref;
+      
+      // update the download object with content and CH info 
+      $download->update(curl_multi_getcontent($ch), curl_getinfo($ch));
+      
+      // if the download was a success
+      if ($download->is2__()) {
+        // cache the download
+        $api->cacheSet($api->getCacheKey(), $download, $cache_for);
+      }
+      
+      $api->setDownload($download);
+    }
+    
+    $results = array();
+    
+    foreach($apis as $api) {
+      $results[] = (object) array(
+        'api' => $api,
+        'parsed' => $api->parse($cache_for = -1, $override_method = null, $node_type = null)
+      );
+    }
+    
+    curl_multi_close($mh);
+    
+    return $results;
+  }
+  
   /**
    * Print $msg to the error log.
    * @param mixed $msg Can be a string, or an Exception, or any other object
@@ -312,7 +398,7 @@ class clApi {
    * @see http://www.php.net/manual/en/errorfunc.constants.php
    */
   static function log($msg, $level = E_USER_NOTICE) {
-    if (is_a($msg, 'Exception')) {
+    if ($msg instanceof Exception) {
       $msg = $msg->getMessage();
     } else if (!is_string($msg)) {
       $msg = print_r($msg, true);
@@ -344,11 +430,11 @@ endif;
 
 class clDownload {
   
-  private $content;
+  private $content = '';
   private $ch;
   private $info;
   
-  function __construct(&$ch = null, $content = null) {
+  function __construct(&$ch = null, $content = false) {
     $this->ch = $ch;
     $this->info = curl_getinfo($this->ch);
     $this->content = $content;
@@ -362,11 +448,16 @@ class clDownload {
     return $this->content;
   }
   
+  function update($content, $info) {
+    $this->content = $content;
+    $this->info = $info;
+  }
+  
   function hasContent() {
     return (bool) strlen(trim($this->content));
   }
   
-  function getCurl() {
+  function &getCurl() {
     return $this->ch;
   }
   

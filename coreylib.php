@@ -348,7 +348,7 @@ class clApi {
    * @see http://www.php.net/manual/en/errorfunc.constants.php
    */
   static function log($msg, $level = E_USER_NOTICE) {
-    if (is_a($msg, 'Exception')) {
+    if ($msg instanceof Exception) {
       $msg = $msg->getMessage();
     } else if (!is_string($msg)) {
       $msg = print_r($msg, true);
@@ -529,7 +529,7 @@ abstract class clCache {
   static $cache;
   static function cache($cache = null) {
     if (!is_null($cache)) {
-      if (!is_a($cache, 'clCache')) {
+      if (!($cache instanceof clCache)) {
         throw new Exception('Object %s does not inherit from clCache', get_class($object));
       }
       self::$cache = new clStash($cache);
