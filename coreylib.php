@@ -53,6 +53,8 @@ class clException extends Exception {}
 @define('COREYLIB_DEFAULT_METHOD', 'get');
 // set this to true to disable all caching activity
 @define('COREYLIB_NOCACHE', false);
+// default cache strategy is clFileCache
+@define('COREYLIB_DEFAULT_CACHE_STRATEGY', 'clFileCache');
 // the name of the folder to create for clFileCache files - this folder is created inside the path clFileCache is told to use
 @define('COREYLIB_FILECACHE_DIR', '.coreylib');
 // auto-detect WordPress environment?
@@ -70,8 +72,6 @@ class clApi {
   
   // the URL provided in the constructor
   private $url;
-  // the content we're parsing
-  private $content;
   // default HTTP headers
   private $headers = array(
     
@@ -91,6 +91,10 @@ class clApi {
   private $ch;
   // reference to caching strategy
   private $cache;
+  // the download
+  private $download;
+  // the cache key
+  private $cache_key;
   
   /**
    * @param String $url The URL to connect to, with or without query string
@@ -131,16 +135,19 @@ class clApi {
    */
   function &parse($cache_for = -1, $override_method = null, $node_type = null) {
     $node = false;
-    $download = $this->download(false, $cache_for, $override_method);
+    
+    if (is_null($this->download)) {
+      $this->download = $this->download(false, $cache_for, $override_method);
+    }
       
     // if the download succeeded
-    if ($download->is2__()) {
+    if ($this->download->is2__()) {
       if ($node_type) {
-        $node = clNode::getNodeFor($download->getContent(), $node_type);
-      } else if ($download->isXml()) {
-        $node = clNode::getNodeFor($download->getContent(), 'xml');
-      } else if ($download->isJson()) {
-        $node = clNode::getNodeFor($download->getContent(), 'json');
+        $node = clNode::getNodeFor($this->download->getContent(), $node_type);
+      } else if ($this->download->isXml()) {
+        $node = clNode::getNodeFor($this->download->getContent(), 'xml');
+      } else if ($this->download->isJson()) {
+        $node = clNode::getNodeFor($this->download->getContent(), 'json');
       } else {
         throw new clException("Unable to determine content type. You can force a particular type by passing a third argument to clApi->parse(\$cache_for = -1, \$override_method = null, \$node_type = null).");
       }
@@ -161,10 +168,17 @@ class clApi {
   }
   
   /**
+   * Retrieve the content of the parsed document.
+   */
+  function getContent() {
+    return $this->download ? $this->download->getContent() : '';
+  }
+  
+  /**
    * Print the content of the parsed document.
    */
   function __toString() {
-    return ($this->content ? $this->content : '');
+    return $this->getContent();
   }
   
   /**
@@ -255,12 +269,10 @@ class clApi {
     $method = is_null($override_method) ? $this->method : $override_method;
   
     $qs = http_build_query($this->params);
-    if ($method != self::METHOD_POST) {
-      $url = ($method == self::METHOD_GET ? $this->url.($qs ? '?'.$qs : '') : $this->url);
-    }
+    $url = ($method == self::METHOD_GET ? $this->url.($qs ? '?'.$qs : '') : $this->url);
     
     // use the URL to generate a cache key unique to request and any authentication data present
-    $cache_key = md5($method.$this->user.$this->pass.$url.$qs);
+    $this->cache_key = $cache_key = md5($method.$this->user.$this->pass.$url.$qs);
     if (($download = $this->cacheGet($cache_key, $cache_for)) !== false) {
       return $download;
     }
@@ -287,9 +299,7 @@ class clApi {
       curl_setopt($this->ch, $opt, $val);
     }
     
-    if (!$queue) {
-      curl_setopt($this->ch, CURLOPT_RETURNTRANSFER, true);
-    }
+    curl_setopt($this->ch, CURLOPT_RETURNTRANSFER, true);
     
     if ($this->method != self::METHOD_POST) {
       curl_setopt($this->ch, CURLOPT_HTTPGET, true);
@@ -299,7 +309,8 @@ class clApi {
     }
     
     if ($queue) {
-      $download = clDownload($this->ch, null);
+      $download = new clDownload($this->ch, false);
+      
     } else {
       $content = curl_exec($this->ch);
       $download = new clDownload($this->ch, $content);
@@ -311,6 +322,14 @@ class clApi {
     }
     
     return $download;
+  }
+  
+  function setDownload(&$download) {
+    if (!($download instanceof clDownload)) {
+      throw new Exception('$download must be of type clDownload');
+    }
+    
+    $this->download = $download;
   }
   
   function cacheWith($clCache) {
@@ -331,6 +350,29 @@ class clApi {
       return $this->cache->set($cache_key, $download, $cache_for);
     }
   }
+
+  /**
+   * Delete cache entry for this API.
+   * Note that the cache key is generated from several components of the request,
+   * including: the request method, the URL, the query string (parameters), and
+   * any username or password used. Changing any one of these before executing
+   * this function will modify the cache key used to store/retrieve the cached
+   * response. So, make sure to fully configure your clApi instance before running 
+   * this method.
+   * @param string $override_method For feature parity with clApi->parse, allows
+   * for overriding the HTTP method used in cache key generation. 
+   * @return A reference to this clApi instance (to support method chaining)
+   */
+  function &flush($override_method = null) {
+    $method = is_null($override_method) ? $this->method : $override_method;
+    $qs = http_build_query($this->params);
+    $url = ($method == self::METHOD_GET ? $this->url.($qs ? '?'.$qs : '') : $this->url);
+    // use the URL to generate a cache key unique to request and any authentication data present
+    $cache_key = md5($method.$this->user.$this->pass.$url.$qs);
+    $this->cacheDel($cache_key);
+
+    return $this;
+  }
   
   function cacheDel($cache_key = null) {
     if (!$this->cache || COREYLIB_NOCACHE) {
@@ -338,6 +380,75 @@ class clApi {
     } else {
       return $this->cache->del($cache_key);
     }
+  }
+  
+  function getCacheKey() {
+    return $this->cache_key;
+  }
+  
+  function &getDownload() {
+    return $this->download;
+  }
+  
+  /**
+   * Use curl_multi to execute a collection of clApi objects.
+   */
+  static function exec($apis, $cache_for = -1, $override_method = null, $node_type = null) {
+    $mh = curl_multi_init();
+    
+    $handles = array();
+    
+    foreach($apis as $a => $api) {
+      if (is_string($api)) {
+        $api = new clApi($api);
+        $apis[$a] = $api;
+      } else if (!($api instanceof clApi)) {
+        throw new Exception("clApi::exec expects an Array of clApi objects.");
+      }
+      
+      $download = $api->download(true, $cache_for, $override_method);
+      $ch = $download->getCurl();
+      
+      if ($download->getContent() === false) {
+        curl_multi_add_handle($mh, $ch);
+      } else {
+        $api->setDownload($download);
+      }
+      
+      $handles[$ch] = array($api, $download, $ch);
+    }
+    
+    do {
+      $status = curl_multi_exec($mh, $active);
+    } while($status == CURLM_CALL_MULTI_PERFORM || $active);
+    
+    foreach($handles as $ch => $ref) {
+      list($api, $download, $ch) = $ref;
+      
+      // update the download object with content and CH info 
+      $download->update(curl_multi_getcontent($ch), curl_getinfo($ch));
+      
+      // if the download was a success
+      if ($download->is2__()) {
+        // cache the download
+        $api->cacheSet($api->getCacheKey(), $download, $cache_for);
+      }
+      
+      $api->setDownload($download);
+    }
+    
+    $results = array();
+    
+    foreach($apis as $api) {
+      $results[] = (object) array(
+        'api' => $api,
+        'parsed' => $api->parse($cache_for = -1, $override_method = null, $node_type = null)
+      );
+    }
+    
+    curl_multi_close($mh);
+    
+    return $results;
   }
   
   /**
@@ -380,11 +491,11 @@ endif;
 
 class clDownload {
   
-  private $content;
+  private $content = '';
   private $ch;
   private $info;
   
-  function __construct(&$ch = null, $content = null) {
+  function __construct(&$ch = null, $content = false) {
     $this->ch = $ch;
     $this->info = curl_getinfo($this->ch);
     $this->content = $content;
@@ -398,11 +509,16 @@ class clDownload {
     return $this->content;
   }
   
+  function update($content, $info) {
+    $this->content = $content;
+    $this->info = $info;
+  }
+  
   function hasContent() {
     return (bool) strlen(trim($this->content));
   }
   
-  function getCurl() {
+  function &getCurl() {
     return $this->ch;
   }
   
@@ -538,7 +654,9 @@ abstract class clCache {
     if (!self::$cache) {
       try {
         // default is FileCache
-        self::$cache = new clStash(new clFileCache());
+        $class = COREYLIB_DEFAULT_CACHE_STRATEGY;
+        $cache = new $class();
+        self::$cache = new clStash($cache);
       } catch (Exception $e) {
         clApi::log($e, E_USER_WARNING);
         return false;
@@ -546,6 +664,87 @@ abstract class clCache {
     }
     
     return self::$cache;
+  }
+
+  private static $buffers = array();
+
+  /**
+   * Attempt to find some cached content. If it's found, echo
+   * the content, and return true. If it's not found, invoke ob_start(),
+   * and return false. In the latter case, the calling script should
+   * next proceed to generate the content to be cached, then, the
+   * script should call clCache::save(), thus caching the content and
+   * printing it at the same time.
+   * @param string $cache_key
+   * @param mixed $cache_for An expression of how long the content 
+   * should be cached
+   * @param clCache $cache Optionally, a clCache implementation other
+   * than the global default
+   * @return mixed - see codedoc above
+   */
+  static function cached($cache_key, $cache_for = -1, $cache = null) {
+    $cache = self::cache($cache);
+
+    if ($cached = $cache->get($cache_key, true)) {
+      if ($cached->expires != 0 && $cached->expires <= self::time()) {
+        self::$buffers[] = (object) array(
+          'cache' => $cache,
+          'cache_key' => $cache_key,
+          'cache_for' => $cache_for
+        );
+        ob_start();
+        return false;
+      } else {
+        echo $cached->value;
+        return true;
+      }
+    } else {
+      self::$buffers[] = (object) array(
+        'cache' => $cache,
+        'cache_key' => $cache_key,
+        'cache_for' => $cache_for
+      );
+      ob_start();
+      return false;
+    }
+  }
+
+  /**
+   * Save the current cache buffer.
+   * @see clCache::cached
+   */
+  static function save($cache_for = null) {
+    if ($buffer = array_pop(self::$buffers)) {
+      $buffer->cache->set($buffer->cache_key, ob_get_flush(), $cache_for ? $cache_for : $buffer->cache_for);
+    } else {
+      clApi::log("clCache::save called, but no buffer was open", E_USER_WARNING);
+    }   
+  }
+
+  /**
+   * Cancel the current cache buffer.
+   * @see clCache::cached
+   */
+  static function cancel() {
+    if (!array_pop(self::$buffers)) {
+      clApi::log("clCache::cancel called, but no buffer was open");
+    }
+  }
+
+  /**
+   * Read data from the global clCache instance.
+   */
+  static function read($cache_key) {
+    $cache = self::cache();
+    return $cache->get($cache_key);
+  }
+
+  /**
+   * Delete content cached in the global default clCache instance.
+   */
+  static function delete($cache_key) {
+    $cache = self::cache();
+    $cache->del($cache_key);
   }
   
   /**
@@ -583,7 +782,7 @@ abstract class clCache {
       return strtotime(gmdate('c'))+$timeout;
     }
   }
-  
+
   /**
    * Produce a standard cache packet.
    * @param $value to be wrapped
@@ -611,6 +810,8 @@ class clStash extends clCache {
   function __construct($cache) {
     if (is_null($cache)) {
       throw new clException("Cache object to proxy cannot be null.");
+    } else if (!($cache instanceOf clCache)) {
+      throw new clException("Cache object must inherit from clCache");
     }
     $this->proxied = $cache;
   }
@@ -631,7 +832,7 @@ class clStash extends clCache {
         }
       // no, the stash was not too old
       } else {
-        clApi::log("Cached data loaded from runtime stack [{$cache_key}]");
+        clApi::log("Cached data loaded from memory [{$cache_key}]");
         return $return_raw ? $stashed : $stashed->value;
       }
     // there was nothing in the stash:

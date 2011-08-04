@@ -17,6 +17,8 @@ class clException extends Exception {}
 @define('COREYLIB_DEFAULT_METHOD', 'get');
 // set this to true to disable all caching activity
 @define('COREYLIB_NOCACHE', false);
+// default cache strategy is clFileCache
+@define('COREYLIB_DEFAULT_CACHE_STRATEGY', 'clFileCache');
 // the name of the folder to create for clFileCache files - this folder is created inside the path clFileCache is told to use
 @define('COREYLIB_FILECACHE_DIR', '.coreylib');
 // auto-detect WordPress environment?
@@ -311,6 +313,29 @@ class clApi {
     } else {
       return $this->cache->set($cache_key, $download, $cache_for);
     }
+  }
+
+  /**
+   * Delete cache entry for this API.
+   * Note that the cache key is generated from several components of the request,
+   * including: the request method, the URL, the query string (parameters), and
+   * any username or password used. Changing any one of these before executing
+   * this function will modify the cache key used to store/retrieve the cached
+   * response. So, make sure to fully configure your clApi instance before running 
+   * this method.
+   * @param string $override_method For feature parity with clApi->parse, allows
+   * for overriding the HTTP method used in cache key generation. 
+   * @return A reference to this clApi instance (to support method chaining)
+   */
+  function &flush($override_method = null) {
+    $method = is_null($override_method) ? $this->method : $override_method;
+    $qs = http_build_query($this->params);
+    $url = ($method == self::METHOD_GET ? $this->url.($qs ? '?'.$qs : '') : $this->url);
+    // use the URL to generate a cache key unique to request and any authentication data present
+    $cache_key = md5($method.$this->user.$this->pass.$url.$qs);
+    $this->cacheDel($cache_key);
+
+    return $this;
   }
   
   function cacheDel($cache_key = null) {

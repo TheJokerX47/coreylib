@@ -55,7 +55,9 @@ abstract class clCache {
     if (!self::$cache) {
       try {
         // default is FileCache
-        self::$cache = new clStash(new clFileCache());
+        $class = COREYLIB_DEFAULT_CACHE_STRATEGY;
+        $cache = new $class();
+        self::$cache = new clStash($cache);
       } catch (Exception $e) {
         clApi::log($e, E_USER_WARNING);
         return false;
@@ -63,6 +65,87 @@ abstract class clCache {
     }
     
     return self::$cache;
+  }
+
+  private static $buffers = array();
+
+  /**
+   * Attempt to find some cached content. If it's found, echo
+   * the content, and return true. If it's not found, invoke ob_start(),
+   * and return false. In the latter case, the calling script should
+   * next proceed to generate the content to be cached, then, the
+   * script should call clCache::save(), thus caching the content and
+   * printing it at the same time.
+   * @param string $cache_key
+   * @param mixed $cache_for An expression of how long the content 
+   * should be cached
+   * @param clCache $cache Optionally, a clCache implementation other
+   * than the global default
+   * @return mixed - see codedoc above
+   */
+  static function cached($cache_key, $cache_for = -1, $cache = null) {
+    $cache = self::cache($cache);
+
+    if ($cached = $cache->get($cache_key, true)) {
+      if ($cached->expires != 0 && $cached->expires <= self::time()) {
+        self::$buffers[] = (object) array(
+          'cache' => $cache,
+          'cache_key' => $cache_key,
+          'cache_for' => $cache_for
+        );
+        ob_start();
+        return false;
+      } else {
+        echo $cached->value;
+        return true;
+      }
+    } else {
+      self::$buffers[] = (object) array(
+        'cache' => $cache,
+        'cache_key' => $cache_key,
+        'cache_for' => $cache_for
+      );
+      ob_start();
+      return false;
+    }
+  }
+
+  /**
+   * Save the current cache buffer.
+   * @see clCache::cached
+   */
+  static function save($cache_for = null) {
+    if ($buffer = array_pop(self::$buffers)) {
+      $buffer->cache->set($buffer->cache_key, ob_get_flush(), $cache_for ? $cache_for : $buffer->cache_for);
+    } else {
+      clApi::log("clCache::save called, but no buffer was open", E_USER_WARNING);
+    }   
+  }
+
+  /**
+   * Cancel the current cache buffer.
+   * @see clCache::cached
+   */
+  static function cancel() {
+    if (!array_pop(self::$buffers)) {
+      clApi::log("clCache::cancel called, but no buffer was open");
+    }
+  }
+
+  /**
+   * Read data from the global clCache instance.
+   */
+  static function read($cache_key) {
+    $cache = self::cache();
+    return $cache->get($cache_key);
+  }
+
+  /**
+   * Delete content cached in the global default clCache instance.
+   */
+  static function delete($cache_key) {
+    $cache = self::cache();
+    $cache->del($cache_key);
   }
   
   /**
@@ -100,7 +183,7 @@ abstract class clCache {
       return strtotime(gmdate('c'))+$timeout;
     }
   }
-  
+
   /**
    * Produce a standard cache packet.
    * @param $value to be wrapped
@@ -128,6 +211,8 @@ class clStash extends clCache {
   function __construct($cache) {
     if (is_null($cache)) {
       throw new clException("Cache object to proxy cannot be null.");
+    } else if (!($cache instanceOf clCache)) {
+      throw new clException("Cache object must inherit from clCache");
     }
     $this->proxied = $cache;
   }
@@ -148,7 +233,7 @@ class clStash extends clCache {
         }
       // no, the stash was not too old
       } else {
-        clApi::log("Cached data loaded from runtime stack [{$cache_key}]");
+        clApi::log("Cached data loaded from memory [{$cache_key}]");
         return $return_raw ? $stashed : $stashed->value;
       }
     // there was nothing in the stash:
@@ -425,4 +510,24 @@ function coreylib_flush() {
   if ($cache = clCache::cache()) {
     $cache->flush();
   }
+}
+
+function cl_cached($cache_key, $cache_for = -1, $cache = null) {
+  return clCache::cached($cache_key, $cache_for, $cache);
+}
+
+function cl_save($cache_for = null) {
+  return clCache::save($cache_for);
+}
+
+function cl_cancel() {
+  return clCache::cancel();
+}
+
+function cl_delete($cache_key) {
+  return clCache::delete($cache_key);
+}
+
+function cl_read($cache_key) {
+  return clCache::read($cache_key);
 }
