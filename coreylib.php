@@ -124,6 +124,10 @@ class clApi {
     
     $this->cache = is_null($cache) ? coreylib_get_cache() : $cache;
   }
+
+  function getUrl() {
+    return $this->url;
+  }
   
   /**
    * Download and parse the data from the specified endpoint using an HTTP GET.
@@ -388,6 +392,123 @@ class clApi {
   
   function &getDownload() {
     return $this->download;
+  }
+
+  static $sort_by = null;
+
+  /**
+   * Given a collection of clNode objects, use $selector to query a set of nodes
+   * from each, then (optionally) sort those nodes by one or more sorting filters.
+   * Sorting filters should be specified <type>:<selector>, where <type> is one of
+   * str, num, date, bool, or fx and <selector> is a valid node selector expression.
+   * The value at <selector> in each node will be converted to <type>, and the 
+   * collection will then be sorted by those converted values. In the special case
+   * of fx, <selector> should instead be a callable function. The function (a custom)
+   * sorting rule, should be implemented as prescribed by the usort documentation,
+   * and should handle node value selection internally.
+   * @param mixed $apis array(clNode), an array of stdClass objects (the return value of clApi::exec), a single clNode instance, or a URL to query
+   * @param string $selector
+   * @param string $sort_by
+   * @return array(clNode) A (sometimes) sorted collection of clNode objects
+   * @see http://www.php.net/manual/en/function.usort.php
+   */
+  static function &grep($nodes, $selector, $sort_by = null /* dynamic args */) {
+    $args = func_get_args();
+    $nodes = @array_shift($args);
+
+    if (!$nodes) {
+      return false;
+
+    } else if (!is_array($nodes)) {
+      if ($nodes instanceof clNode) {
+        $nodes = array($nodes);
+      } else {
+        $api = new clApi((string) $nodes);
+        if ($node = $api->parse()) {
+          clApi::log("The URL [$nodes] did not parse, so clApi::grep fails.", E_USER_ERROR);
+          return false;
+        }
+        $nodes = array($node);
+      }
+    }
+
+    $selector = @array_shift($args);
+
+    if (!$selector) {
+      clApi::log('clApi::grep requires $selector argument (arg #2)', E_USER_WARNING);
+      return false;
+    }
+
+    $sort_by = array();
+
+    foreach($args as $s) {
+      if (preg_match('/(.*?)\:(.*)/', $s, $matches)) {
+        @list($type, $order) = preg_split('/,\s*/', $matches[1]);
+        if (!$order) {
+          $order = 'asc';
+        }
+        $sort_by[] = (object) array(
+          'type' => $type,
+          'order' => strtolower($order),
+          'selector' => $matches[2] 
+        );
+      } else {
+        clApi::log("clApi::grep $sort_by arguments must be formatted <type>:<selector>: [{$s}] is invalid.", E_USER_WARNING);
+      }
+    }
+
+    // build the node collection
+    $grepd = array();
+    foreach($nodes as $node) {
+      // automatically detect clApi::exec results...
+      if ($node instanceof stdClass) {
+        if ($node->parsed) {
+          $grepd = array_merge( $grepd, $node->parsed->get($selector)->toArray() );
+        } else {
+          clApi::log(sprintf("clApi::grep can't sort failed parse on [%s]", $node->api->getUrl()), E_USER_WARNING);
+        }
+      }
+      $grepd = array_merge( $grepd, $node->parsed ? $node->parsed->get($selector)->toArray() : $node->get($selector)->toArray() );
+    }
+
+    // sort the collection
+    foreach($sort_by as $s) {
+      self::$sort_by = $s;
+      usort($grepd, array('clApi', 'grep_sort'));
+      if ($order == 'desc') {
+        $grepd = array_reverse($grepd);
+      }
+    }
+
+    return $grepd;
+  }
+
+  static function grep_sort($node1, $node2) {
+    $sort_by = self::$sort_by;
+    $v1 = $node1->get($sort_by->selector);
+    $v2 = $node2->get($sort_by->selector);
+
+    if ($sort_by->type == 'string') {
+      $v1 = (string) $v1;
+      $v2 = (string) $v2;
+      return strcasecmp($v1, $v2);
+
+    } else if ($sort_by->type == 'bool') {
+      $v1 = (bool) (string) $v1;
+      $v2 = (bool) (string) $v2;
+      return ($v1 === $v2) ? 0 : ( $v1 === true ? -1 : 1 );
+
+    } else if ($sort_by->type == 'num') {
+      $v1 = (float) (string) $v1;
+      $v2 = (float) (string) $v2;
+      return ($v1 === $v2) ? 0 : ( $v1 < $v2 ? -1 : 1 );
+
+    } else if ($sort_by->type == 'date') {
+      $v1 = strtotime((string) $v1);
+      $v2 = strtotime((string) $v2);
+      return ($v1 === $v2) ? 0 : ( $v1 < $v2 ? -1 : 1 );
+
+    }
   }
   
   /**
