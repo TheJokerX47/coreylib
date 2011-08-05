@@ -1110,6 +1110,26 @@ function coreylib_flush() {
     $cache->flush();
   }
 }
+
+function cl_cached($cache_key, $cache_for = -1, $cache = null) {
+  return clCache::cached($cache_key, $cache_for, $cache);
+}
+
+function cl_save($cache_for = null) {
+  return clCache::save($cache_for);
+}
+
+function cl_cancel() {
+  return clCache::cancel();
+}
+
+function cl_delete($cache_key) {
+  return clCache::delete($cache_key);
+}
+
+function cl_read($cache_key) {
+  return clCache::read($cache_key);
+}
 // src/node.php
 
 
