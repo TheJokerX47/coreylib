@@ -431,8 +431,9 @@ class clApi {
         } else {
           clApi::log(sprintf("clApi::grep can't sort failed parse on [%s]", $node->api->getUrl()), E_USER_WARNING);
         }
+      } else {
+        $grepd = array_merge( $grepd, $node->get($selector)->toArray() );
       }
-      $grepd = array_merge( $grepd, $node->parsed ? $node->parsed->get($selector)->toArray() : $node->get($selector)->toArray() );
     }
 
     // sort the collection
@@ -500,7 +501,7 @@ class clApi {
         $api->setDownload($download);
       }
       
-      $handles[$ch] = array($api, $download, $ch);
+      $handles[(int) $ch] = array($api, $download, $ch);
     }
     
     do {
