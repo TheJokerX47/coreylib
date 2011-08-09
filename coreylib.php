@@ -467,8 +467,9 @@ class clApi {
         } else {
           clApi::log(sprintf("clApi::grep can't sort failed parse on [%s]", $node->api->getUrl()), E_USER_WARNING);
         }
+      } else {
+        $grepd = array_merge( $grepd, $node->get($selector)->toArray() );
       }
-      $grepd = array_merge( $grepd, $node->parsed ? $node->parsed->get($selector)->toArray() : $node->get($selector)->toArray() );
     }
 
     // sort the collection
@@ -536,7 +537,7 @@ class clApi {
         $api->setDownload($download);
       }
       
-      $handles[$ch] = array($api, $download, $ch);
+      $handles[(int) $ch] = array($api, $download, $ch);
     }
     
     do {
@@ -869,6 +870,14 @@ abstract class clCache {
   }
   
   /**
+   * Write content to the global clCache instance.
+   */
+  static function write($cache_key, $value, $timeout = -1) {
+    $cache = self::cache();
+    return $cache->set($cache_key, $value, $timeout);
+  }
+
+  /**
    * Convert timeout expression to timestamp marking the moment in the future
    * at which point the timeout (or expiration) would occur.
    * @param mixed $timeout An expression of time or a positive integer indicating the number of seconds
@@ -1144,7 +1153,7 @@ class clWordPressCache extends clCache {
       // convert MySQL date strings to timestamps
       $raw->expires = is_null($raw->expires) ? 0 : strtotime($raw->expires);
       $raw->created = strtotime($raw->created);
-      $raw->value = @unserialize($raw->value);
+      $raw->value = maybe_unserialize($raw->value);
       // if it's not expired
       if (is_null($raw->expires) || self::time() < $raw->expires) {
         // return the requested data type
@@ -1152,13 +1161,13 @@ class clWordPressCache extends clCache {
       // otherwise, purge the file, note the expiration, and move on
       } else {
         $this->del($cache_key);
-        clApi::log("Cache was expired [{$cache_key}]");
+        clApi::log("Cache was expired {$this->wpdb->coreylib}[{$cache_key}]");
         return false;
       }
     
     // cache did not exist
     } else {
-      clApi::log("Cache record does not exist [{$cache_key}]");
+      clApi::log("Cache record does not exist {$this->wpdb->coreylib}[{$cache_key}]");
       return false;
     }
   }
@@ -1174,7 +1183,7 @@ class clWordPressCache extends clCache {
     }
     
     // if the value can be serialized
-    if ($serialized = @serialize($value)) {
+    if ($serialized = maybe_serialize($value)) {
       // prepare the SQL
       $sql = $this->wpdb->prepare("
         REPLACE INTO {$this->wpdb->coreylib} 
@@ -1183,16 +1192,24 @@ class clWordPressCache extends clCache {
         (%s, %s, %s, %s)
       ", 
         $cache_key,
-        date('Y/m/d H:i:s', self::time()),
-        date('Y/m/d H:i:s', $expires),
+        $created = date('Y/m/d H:i:s', self::time()),
+        $expires = date('Y/m/d H:i:s', $expires),
         $serialized
       );
       
       // insert it!
       $this->wpdb->query($sql);
-      // TODO: test for failures
+      if ($this->wpdb->query($sql)) {
+        clApi::log("Stored content in {$this->wpdb->coreylib}[{$cache_key}]");
+      } else {
+        clApi::log("Failed to store content in {$this->wpdb->coreylib}[{$cache_key}]", E_USER_WARNING);
+      }
       
-      return $raw;
+      return (object) array(
+        'expires' => $expires,
+        'created' => $created,
+        'value' => value
+      );
     } else {
       clApi::log("Failed to serialize cache data [{$cache_key}]", E_USER_WARNING);
       return false;
@@ -1250,6 +1267,10 @@ function cl_delete($cache_key) {
 
 function cl_read($cache_key) {
   return clCache::read($cache_key);
+}
+
+function cl_write($cache_key) {
+  return clCache::write($cache_key);
 }
 // src/node.php
 
