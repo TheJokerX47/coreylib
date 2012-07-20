@@ -621,7 +621,7 @@ class clDownload {
   function isXml() {
     if (preg_match(sprintf('#(%s)#i', implode('|', self::$xmlContentTypes)), $this->info['content_type'])) {
       return true;
-    } else if (stripos('<?xml', trim($this->content)) === 0) {
+    } else if (stripos(trim($this->content), '<?xml') === 0) {
       return true;
     } else {
       return false;
